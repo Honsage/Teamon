@@ -10,6 +10,12 @@ class UserManager(BaseUserManager):
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
+        
+        # После сохранения устанавливаем username равным id
+        if not user.username:
+            user.username = str(user.id)
+            user.save(using=self._db)
+        
         return user
 
     def create_superuser(self, email, password=None, **extra_fields):
@@ -20,6 +26,12 @@ class UserManager(BaseUserManager):
 
 
 class User(AbstractBaseUser, PermissionsMixin):
+    username = models.CharField(
+        max_length=150, 
+        unique=True, 
+        verbose_name='Username',
+        blank=True  # Разрешаем пустое значение при создании
+    )
     email = models.EmailField(unique=True, verbose_name='Email')
     first_name = models.CharField(max_length=150, blank=True, verbose_name='Имя')
     last_name = models.CharField(max_length=150, blank=True, verbose_name='Фамилия')
@@ -30,7 +42,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     objects = UserManager()
 
     USERNAME_FIELD = 'email'  # Поле для аутентификации
-    REQUIRED_FIELDS = []  # Дополнительные поля при createsuperuser
+    REQUIRED_FIELDS = ['username']  # Добавляем username в обязательные поля для createsuperuser
 
     class Meta:
         verbose_name = 'Пользователь'
@@ -38,6 +50,17 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.email
+
+    def save(self, *args, **kwargs):
+        """Переопределяем save для установки username равным id при создании"""
+        is_new = self.pk is None
+        super().save(*args, **kwargs)
+        
+        # Если это новый пользователь и username не установлен, устанавливаем его равным id
+        if is_new and not self.username:
+            self.username = str(self.pk)
+            # Сохраняем без вызова save рекурсивно
+            super().save(update_fields=['username'])
 
     def get_full_name(self):
         return f"{self.first_name} {self.last_name}".strip() or self.email
