@@ -76,8 +76,6 @@ class RegisterSerializer(serializers.ModelSerializer):
         user.save()
         return user
 
-# serializers.py - добавьте в конец файла
-
 class UserSearchSerializer(serializers.ModelSerializer):
     """Сериализатор для поиска пользователей с дополнительной информацией"""
     full_name = serializers.SerializerMethodField()
@@ -107,38 +105,58 @@ class UserSearchSerializer(serializers.ModelSerializer):
         if not request:
             return 0
         
-        query = request.query_params.get('q', '').lower()
+        # Получаем параметры запроса
+        email_query = request.query_params.get('email', '').lower()
+        first_name_query = request.query_params.get('first_name', '').lower()
+        last_name_query = request.query_params.get('last_name', '').lower()
+        username_query = request.query_params.get('username', '').lower()
         
-        # Проверяем точные совпадения
-        if obj.email.lower() == query:
-            return 100  # Точное совпадение email
-        elif obj.email.lower().startswith(query):
-            return 90   # Email начинается с запроса
-        elif query in obj.email.lower():
-            return 80   # Email содержит запрос
+        relevance = 0
         
-        # Проверяем совпадения username
-        if obj.username and obj.username.lower() == query:
-            return 88   # Точное совпадение username
-        elif obj.username and obj.username.lower().startswith(query):
-            return 78   # Username начинается с запроса
+        # Проверяем совпадения по email
+        if email_query:
+            if obj.email.lower() == email_query:
+                relevance = max(relevance, 100)
+            elif obj.email.lower().startswith(email_query):
+                relevance = max(relevance, 90)
+            elif email_query in obj.email.lower():
+                relevance = max(relevance, 80)
         
-        # Проверяем совпадения имени/фамилии
-        full_name = self.get_full_name(obj).lower()
-        if full_name == query:
-            return 95   # Точное совпадение полного имени
-        elif full_name.startswith(query):
-            return 85   # Полное имя начинается с запроса
+        # Проверяем совпадения по username
+        if username_query and obj.username:
+            if obj.username.lower() == username_query:
+                relevance = max(relevance, 88)
+            elif obj.username.lower().startswith(username_query):
+                relevance = max(relevance, 78)
+            elif username_query in obj.username.lower():
+                relevance = max(relevance, 68)
         
-        # Проверяем отдельно имя и фамилию
-        first_name = (obj.first_name or '').lower()
-        last_name = (obj.last_name or '').lower()
+        # Проверяем совпадения по имени
+        if first_name_query and obj.first_name:
+            first_name = obj.first_name.lower()
+            if first_name == first_name_query:
+                relevance = max(relevance, 75)
+            elif first_name.startswith(first_name_query):
+                relevance = max(relevance, 65)
+            elif first_name_query in first_name:
+                relevance = max(relevance, 50)
         
-        if first_name == query or last_name == query:
-            return 75   # Точное совпадение с именем или фамилией
-        elif first_name.startswith(query) or last_name.startswith(query):
-            return 65   # Имя или фамилия начинаются с запроса
-        elif query in first_name or query in last_name:
-            return 50   # Частичное совпадение
+        # Проверяем совпадения по фамилии
+        if last_name_query and obj.last_name:
+            last_name = obj.last_name.lower()
+            if last_name == last_name_query:
+                relevance = max(relevance, 75)
+            elif last_name.startswith(last_name_query):
+                relevance = max(relevance, 65)
+            elif last_name_query in last_name:
+                relevance = max(relevance, 50)
         
-        return 40  # Другие совпадения
+        # Проверяем комбинацию имени и фамилии (если оба параметра указаны)
+        if first_name_query and last_name_query and obj.first_name and obj.last_name:
+            full_name = f"{obj.first_name} {obj.last_name}".lower()
+            if full_name == f"{first_name_query} {last_name_query}":
+                relevance = max(relevance, 95)
+            elif full_name.startswith(f"{first_name_query} {last_name_query}"):
+                relevance = max(relevance, 85)
+        
+        return relevance

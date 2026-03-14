@@ -12,8 +12,6 @@ urlpatterns = [
     path('profile/', UserProfileView.as_view(), name='profile'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('register/', RegisterView.as_view(), name='register'),
-    
-    # Новые эндпоинты для поиска пользователей
     path('users/search/', UserSearchView.as_view(), name='user-search'),
     path('users/<int:user_id>/', UserDetailView.as_view(), name='user-detail'),
 ]

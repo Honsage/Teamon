@@ -97,57 +97,66 @@ class RegisterView(APIView):
 
 class UserSearchView(APIView):
     """
-    Поиск пользователей по email, имени и фамилии с автодополнением
-    GET /api/auth/users/search/?q=поисковый_запрос
+    Поиск пользователей по email, имени, фамилии и username
+    GET /api/auth/users/search/
+    
+    Параметры (все необязательные):
+    - email: частичное совпадение email
+    - first_name: частичное совпадение имени
+    - last_name: частичное совпадение фамилии
+    - username: частичное совпадение username
+    
+    Если параметры не указаны, возвращается пустой список
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        query = request.query_params.get('q', '').strip()
+        # Получаем параметры запроса
+        email_query = request.query_params.get('email', '').strip()
+        first_name_query = request.query_params.get('first_name', '').strip()
+        last_name_query = request.query_params.get('last_name', '').strip()
+        username_query = request.query_params.get('username', '').strip()
         
-        if not query or len(query) < 2:
+        # Проверяем, есть ли хотя бы один параметр
+        if not any([email_query, first_name_query, last_name_query, username_query]):
             return Response([], status=status.HTTP_200_OK)
         
-        # Разбиваем запрос на слова для поиска
-        search_terms = query.lower().split()
-        
-        # Начинаем с пустого QuerySet
+        # Начинаем с QuerySet всех пользователей
         users = User.objects.all()
         
         # Исключаем текущего пользователя из результатов
         users = users.exclude(id=request.user.id)
         
-        # Создаем Q объекты для различных условий поиска
+        # Создаем Q объекты для условий поиска
         from django.db.models import Q
         
-        # Поиск по email (частичное совпадение)
-        email_condition = Q(email__icontains=query)
+        conditions = Q()
         
-        # Поиск по имени и фамилии
-        name_condition = Q()
-        for term in search_terms:
-            name_condition &= (
-                Q(first_name__icontains=term) | 
-                Q(last_name__icontains=term) |
-                Q(first_name__icontains=term) & Q(last_name__icontains=term)
+        # Поиск по email
+        if email_query:
+            conditions |= Q(email__icontains=email_query)
+        
+        # Поиск по имени
+        if first_name_query:
+            conditions |= Q(first_name__icontains=first_name_query)
+        
+        # Поиск по фамилии
+        if last_name_query:
+            conditions |= Q(last_name__icontains=last_name_query)
+        
+        # Поиск по username
+        if username_query:
+            conditions |= Q(username__icontains=username_query)
+        
+        # Поиск по комбинации имени и фамилии (если оба указаны)
+        if first_name_query and last_name_query:
+            conditions |= Q(
+                first_name__icontains=first_name_query,
+                last_name__icontains=last_name_query
             )
         
-        # Поиск по полному имени (если запрос из двух слов, ищем имя+фамилия)
-        full_name_condition = Q()
-        if len(search_terms) >= 2:
-            # Ищем exact совпадение имя + фамилия (порядок важен)
-            full_name_condition = Q(
-                first_name__icontains=search_terms[0],
-                last_name__icontains=search_terms[1]
-            ) | Q(
-                first_name__icontains=search_terms[1],
-                last_name__icontains=search_terms[0]
-            )
-        
-        # Объединяем все условия
-        users = users.filter(
-            email_condition | name_condition | full_name_condition
-        ).distinct()[:20]  # Ограничиваем результаты
+        # Применяем условия
+        users = users.filter(conditions).distinct()[:20]  # Ограничиваем результаты
         
         # Сериализуем результаты
         serializer = UserSearchSerializer(users, many=True, context={'request': request})
