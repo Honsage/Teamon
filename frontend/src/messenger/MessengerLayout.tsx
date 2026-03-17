@@ -525,7 +525,7 @@ const MessengerShell: React.FC = () => {
     const run = async () => {
       try {
         const resp = await axios.get<UserProfileForSearch[]>(
-          `/api/auth/users/search/?q=${encodeURIComponent(
+          `/api/auth/users/search/?email=${encodeURIComponent(
             userSearch.trim()
           )}`,
           {
@@ -604,7 +604,9 @@ const MessengerShell: React.FC = () => {
 
     if (data.chatType === "private" && data.otherUserEmail) {
       const searchResp = await axios.get<UserProfileForSearch[]>(
-        `/api/auth/users/search/?q=${encodeURIComponent(data.otherUserEmail)}`,
+        `/api/auth/users/search/?email=${encodeURIComponent(
+          data.otherUserEmail
+        )}`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       const target = searchResp.data.find(

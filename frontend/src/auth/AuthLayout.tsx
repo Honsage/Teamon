@@ -139,6 +139,7 @@ const RegisterPage: React.FC = () => {
   const { register } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = React.useState("");
+  const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [password2, setPassword2] = React.useState("");
   const [firstName, setFirstName] = React.useState("");
@@ -157,7 +158,14 @@ const RegisterPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      await register(email, password, firstName, lastName, password2);
+      await register(
+        email,
+        password,
+        username.trim() || null,
+        firstName,
+        lastName,
+        password2
+      );
       navigate("/app/chats");
     } catch (err) {
       console.error(err);
@@ -197,6 +205,18 @@ const RegisterPage: React.FC = () => {
               onChange={(e) => setLastName(e.target.value)}
             />
           </div>
+        </div>
+        <div className="space-y-1">
+          <label className="text-sm text-slate-300" htmlFor="username">
+            Никнейм (опционально)
+          </label>
+          <input
+            id="username"
+            type="text"
+            className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
         </div>
         <div className="space-y-1">
           <label className="text-sm text-slate-300" htmlFor="email">

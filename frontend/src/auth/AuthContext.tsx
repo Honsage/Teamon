@@ -4,6 +4,7 @@ import axios from "axios";
 type UserProfile = {
   id: number;
   email: string;
+  username?: string;
   full_name: string;
   display_name: string;
 };
@@ -16,6 +17,7 @@ type AuthContextValue = {
   register: (
     email: string,
     password: string,
+    username: string | null,
     firstName: string,
     lastName: string,
     password2: string
@@ -77,12 +79,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const register = async (
     email: string,
     password: string,
+    username: string | null,
     firstName: string,
     lastName: string,
     password2: string
   ) => {
     await axios.post("/api/auth/register/", {
       email,
+      username: username || undefined,
       password,
       password2,
       first_name: firstName,
