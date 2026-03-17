@@ -562,206 +562,21 @@ ws://localhost:8000/ws/chat/1/?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 }
 ```
 
-# Эндпоинт поиска пользователей
-
-## URL и метод
+#### Краткая инструкция для запуска проекта
+В первой командной строке (для бэкэнда):
 ```
-GET /api/auth/users/search/
-```
-
-## Параметры (все необязательные)
-- `email` - частичное совпадение email
-- `first_name` - частичное совпадение имени
-- `last_name` - частичное совпадение фамилии
-- `username` - частичное совпадение username
-
-## Аутентификация
-Требуется JWT токен в заголовке:
-```
-Authorization: Bearer <ваш_токен>
+cd backend
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+cd src
+python manage.py migrate
+python manage.py runserver
 ```
 
----
-
-## Примеры использования
-
-### 1. Поиск по email
-**Запрос:**
+Во второй командной строке (для фронтенда):
 ```
-GET /api/auth/users/search/?email=ivan
+cd frontend
+npm install
+npm run dev
 ```
-
-**Ответ:**
-```json
-[
-    {
-        "id": 5,
-        "username": "5",
-        "email": "ivan@example.com",
-        "first_name": "Иван",
-        "last_name": "Петров",
-        "full_name": "Иван Петров",
-        "display_name": "Иван Петров",
-        "search_relevance": 90
-    },
-    {
-        "id": 8,
-        "username": "8",
-        "email": "ivanov@example.com",
-        "first_name": "Петр",
-        "last_name": "Сидоров",
-        "full_name": "Петр Сидоров",
-        "display_name": "Петр Сидоров",
-        "search_relevance": 80
-    }
-]
-```
-
-### 2. Поиск по имени
-**Запрос:**
-```
-GET /api/auth/users/search/?first_name=Иван
-```
-
-**Ответ:**
-```json
-[
-    {
-        "id": 5,
-        "username": "5",
-        "email": "ivan@example.com",
-        "first_name": "Иван",
-        "last_name": "Петров",
-        "full_name": "Иван Петров",
-        "display_name": "Иван Петров",
-        "search_relevance": 65
-    }
-]
-```
-
-### 3. Поиск по фамилии
-**Запрос:**
-```
-GET /api/auth/users/search/?last_name=Петров
-```
-
-**Ответ:**
-```json
-[
-    {
-        "id": 5,
-        "username": "5",
-        "email": "ivan@example.com",
-        "first_name": "Иван",
-        "last_name": "Петров",
-        "full_name": "Иван Петров",
-        "display_name": "Иван Петров",
-        "search_relevance": 65
-    },
-    {
-        "id": 12,
-        "username": "12",
-        "email": "maria@example.com",
-        "first_name": "Мария",
-        "last_name": "Петрова",
-        "full_name": "Мария Петрова",
-        "display_name": "Мария Петрова",
-        "search_relevance": 65
-    }
-]
-```
-
-### 4. Поиск по username
-**Запрос:**
-```
-GET /api/auth/users/search/?username=12
-```
-
-**Ответ:**
-```json
-[
-    {
-        "id": 12,
-        "username": "12",
-        "email": "maria@example.com",
-        "first_name": "Мария",
-        "last_name": "Петрова",
-        "full_name": "Мария Петрова",
-        "display_name": "Мария Петрова",
-        "search_relevance": 78
-    }
-]
-```
-
-### 5. Комбинированный поиск (имя + фамилия)
-**Запрос:**
-```
-GET /api/auth/users/search/?first_name=Иван&last_name=Петров
-```
-
-**Ответ:**
-```json
-[
-    {
-        "id": 5,
-        "username": "5",
-        "email": "ivan@example.com",
-        "first_name": "Иван",
-        "last_name": "Петров",
-        "full_name": "Иван Петров",
-        "display_name": "Иван Петров",
-        "search_relevance": 95
-    }
-]
-```
-
-### 6. Поиск по всем параметрам
-**Запрос:**
-```
-GET /api/auth/users/search/?email=maria&first_name=Мария&last_name=Петрова&username=12
-```
-
-**Ответ:**
-```json
-[
-    {
-        "id": 12,
-        "username": "12",
-        "email": "maria@example.com",
-        "first_name": "Мария",
-        "last_name": "Петрова",
-        "full_name": "Мария Петрова",
-        "display_name": "Мария Петрова",
-        "search_relevance": 100
-    }
-]
-```
-
-### 7. Без параметров (пустой результат)
-**Запрос:**
-```
-GET /api/auth/users/search/
-```
-
-**Ответ:**
-```json
-[]
-```
-
----
-
-## Поля ответа
-
-| Поле | Описание |
-|------|----------|
-| `id` | ID пользователя |
-| `username` | Username (по умолчанию равен ID) |
-| `email` | Email пользователя |
-| `first_name` | Имя |
-| `last_name` | Фамилия |
-| `full_name` | Полное имя (имя + фамилия или email) |
-| `display_name` | Имя для отображения |
-| `search_relevance` | Релевантность результата (0-100) |
-
-
----
