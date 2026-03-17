@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply text-slate-50 bg-bgDark;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Segoe UI", sans-serif;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.glass-panel {
+  @apply bg-slate-900/70 backdrop-blur-xl border border-slate-700/60 shadow-soft rounded-2xl;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  @apply bg-slate-600 rounded-full;
+}
+
