@@ -98,28 +98,34 @@ class ChatSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_at', 'updated_at', 'project']
     
     def get_last_message(self, obj):
-        if not hasattr(obj, '_meta'):
-            return None
-            
+        """
+        Возвращает последнее (самое новое) сообщение чата
+        для превью в списке чатов.
+        """
         try:
-            last_msg = obj.messages.filter(is_deleted=False).first()
-            if last_msg:
-                sender = last_msg.sender
-                return {
-                    'id': last_msg.id,
-                    'text': last_msg.text[:100],
-                    'sender': {
-                        'id': sender.id,
-                        'email': sender.email,
-                        'first_name': sender.first_name,
-                        'last_name': sender.last_name,
-                        'full_name': f"{sender.first_name} {sender.last_name}".strip() or sender.email
-                    },
-                    'created_at': last_msg.created_at
-                }
-        except (AttributeError, ValueError):
-            pass
-        return None
+            qs = obj.messages.filter(is_deleted=False).order_by("-created_at")
+        except AttributeError:
+            return None
+
+        last_msg = qs.first()
+        if not last_msg:
+            return None
+
+        sender = last_msg.sender
+        full_name = (
+            f"{sender.first_name} {sender.last_name}".strip() or sender.email
+        )
+
+        return {
+            "id": last_msg.id,
+            "text": last_msg.text[:100],
+            "sender": {
+                "id": sender.id,
+                "email": sender.email,
+                "full_name": full_name,
+            },
+            "created_at": last_msg.created_at,
+        }
     
     def validate(self, data):
         chat_type = data.get('chat_type')
