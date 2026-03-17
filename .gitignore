@@ -139,3 +139,16 @@ GitHub.sublime-settings
 !.vscode/extensions.json 
 .history
 .vscode
+
+# Node / frontend #
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.eslintcache
+frontend/.turbo
+
+# OS / editor junk #
+Thumbs.db
+*.DS_Store
+*.swp
+*.swo
