@@ -99,8 +99,8 @@ class ChatSerializer(serializers.ModelSerializer):
     
     def get_last_message(self, obj):
         """
-        Возвращает последнее (самое новое) сообщение чата
-        для превью в списке чатов.
+        Возвращает последнее (по времени) не удалённое сообщение в чате
+        для отображения превью в списке чатов.
         """
         try:
             qs = obj.messages.filter(is_deleted=False).order_by("-created_at")
@@ -112,9 +112,7 @@ class ChatSerializer(serializers.ModelSerializer):
             return None
 
         sender = last_msg.sender
-        full_name = (
-            f"{sender.first_name} {sender.last_name}".strip() or sender.email
-        )
+        full_name = f"{sender.first_name} {sender.last_name}".strip() or sender.email
 
         return {
             "id": last_msg.id,
@@ -122,6 +120,8 @@ class ChatSerializer(serializers.ModelSerializer):
             "sender": {
                 "id": sender.id,
                 "email": sender.email,
+                "first_name": sender.first_name,
+                "last_name": sender.last_name,
                 "full_name": full_name,
             },
             "created_at": last_msg.created_at,

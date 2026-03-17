@@ -37,6 +37,15 @@ class ChatViewSet(viewsets.ModelViewSet):
         if serializer.validated_data.get('chat_type') == 'private':
             other_user_id = request.data.get('other_user_id')
             if other_user_id:
+                # Проверяем, существует ли пользователь
+                try:
+                    User.objects.get(id=other_user_id)
+                except User.DoesNotExist:
+                    return Response(
+                        {'error': f'User with id {other_user_id} not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                
                 existing_chat = self.check_existing_private_chat(
                     request.user.id, 
                     other_user_id
@@ -58,18 +67,43 @@ class ChatViewSet(viewsets.ModelViewSet):
         # Если указан другой пользователь для личного чата
         other_user_id = request.data.get('other_user_id')
         if other_user_id and chat.chat_type == 'private':
-            ChatParticipant.objects.create(
-                chat=chat,
-                user_id=other_user_id
-            )
+            # Проверяем существование пользователя (уже проверили выше, но для безопасности)
+            try:
+                User.objects.get(id=other_user_id)
+                ChatParticipant.objects.create(
+                    chat=chat,
+                    user_id=other_user_id
+                )
+            except User.DoesNotExist:
+                # Если пользователь не найден, удаляем созданный чат и возвращаем ошибку
+                chat.delete()
+                return Response(
+                    {'error': f'User with id {other_user_id} not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
         
         # Для группового чата добавляем участников, если указаны
         if chat.chat_type == 'group':
             participant_ids = request.data.get('participant_ids', [])
+            invalid_users = []
+            
             for user_id in participant_ids:
-                ChatParticipant.objects.get_or_create(
-                    chat=chat,
-                    user_id=user_id
+                try:
+                    user = User.objects.get(id=user_id)
+                    ChatParticipant.objects.get_or_create(
+                        chat=chat,
+                        user=user
+                    )
+                except User.DoesNotExist:
+                    invalid_users.append(user_id)
+            
+            # Если есть несуществующие пользователи, возвращаем ошибку
+            if invalid_users:
+                # Удаляем созданный чат
+                chat.delete()
+                return Response(
+                    {'error': f'Users with ids {invalid_users} not found'},
+                    status=status.HTTP_404_NOT_FOUND
                 )
         
         # Получаем обновленный чат с полными данными
@@ -175,15 +209,17 @@ class ChatViewSet(viewsets.ModelViewSet):
             
             # Отправляем уведомление в группу чата
             async_to_sync(channel_layer.group_send)(
-                f'chat_{chat.id}',
+                f"chat_{chat.id}",
                 {
-                    'type': 'new_participant',
-                    'user_id': user.id,
-                    'email': user.email,
-                    'full_name': full_name,
-                    'display_name': full_name,
-                    'joined_at': participant.joined_at.isoformat() if participant.joined_at else None
-                }
+                    "type": "new_participant",
+                    "user_id": user.id,
+                    "email": user.email,
+                    "full_name": full_name,
+                    "display_name": full_name,
+                    "joined_at": participant.joined_at.isoformat()
+                    if participant.joined_at
+                    else None,
+                },
             )
         except Exception as e:
             # Логируем ошибку, но не прерываем выполнение
@@ -214,31 +250,32 @@ class MessageViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """Создание нового сообщения"""
-        chat_id = self.request.data.get("chat")
-
+        chat_id = self.request.data.get('chat')
+        
         # Проверяем доступ к чату
         if not ChatParticipant.objects.filter(
-            chat_id=chat_id, user=self.request.user
+            chat_id=chat_id,
+            user=self.request.user
         ).exists():
             raise PermissionDenied("You don't have access to this chat")
-
+        
         message = serializer.save(sender=self.request.user)
-
+        
         # Обновляем updated_at чата
         Chat.objects.filter(id=chat_id).update(updated_at=message.created_at)
-
+        
         # Отправляем уведомление через вебсокеты всем участникам чата
         self.notify_participants(message)
-
+        
         return message
 
     def notify_participants(self, message):
         """Отправляет уведомление о новом сообщении через вебсокеты"""
         channel_layer = get_channel_layer()
-
+        
         # Получаем всех участников чата кроме отправителя
         participants = message.chat.participants.exclude(id=message.sender.id)
-
+        
         sender = message.sender
         # Формируем отображаемое имя отправителя
         if sender.first_name or sender.last_name:
@@ -247,7 +284,7 @@ class MessageViewSet(viewsets.ModelViewSet):
         else:
             sender_full_name = sender.email
             sender_display_name = sender.email
-
+        
         for user in participants:
             async_to_sync(channel_layer.group_send)(
                 f"user_{user.id}",
@@ -256,6 +293,7 @@ class MessageViewSet(viewsets.ModelViewSet):
                     "chat_id": message.chat.id,
                     "message_id": message.id,
                     "chat_name": message.chat.name or f"Chat {message.chat.id}",
+                    "sender_id": sender.id,
                     "sender_email": sender.email,
                     "sender_full_name": sender_full_name,
                     "sender_display_name": sender_display_name,
@@ -263,6 +301,7 @@ class MessageViewSet(viewsets.ModelViewSet):
                     "created_at": message.created_at.isoformat(),
                 },
             )
+    
     @action(detail=True, methods=['post'])
     def mark_as_deleted(self, request, pk=None):
         """Soft delete сообщения"""
