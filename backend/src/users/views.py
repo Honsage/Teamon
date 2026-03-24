@@ -3,10 +3,49 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
-from .serializers import LoginSerializer, UserSerializer, RegisterSerializer, UserSearchSerializer
+from .serializers import (
+    LoginSerializer,
+    UserSerializer,
+    RegisterSerializer,
+    UserSearchSerializer,
+    ProfileUpdateSerializer,
+)
 from django.contrib.auth import get_user_model
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
 User = get_user_model()
+
+
+def _notify_user_profile_updated(user):
+    """Уведомляет пользователя и собеседников по общим чатам об изменении профиля (realtime)."""
+    try:
+        from chats.models import ChatParticipant
+
+        data = UserSerializer(user).data
+        channel_layer = get_channel_layer()
+        if not channel_layer:
+            return
+        chat_ids = ChatParticipant.objects.filter(user=user).values_list(
+            "chat_id", flat=True
+        )
+        other_ids = (
+            ChatParticipant.objects.filter(chat_id__in=chat_ids)
+            .exclude(user=user)
+            .values_list("user_id", flat=True)
+            .distinct()
+        )
+        recipient_ids = set(other_ids) | {user.id}
+        for uid in recipient_ids:
+            async_to_sync(channel_layer.group_send)(
+                f"user_{uid}",
+                {
+                    "type": "notify_user_profile_updated",
+                    "user": data,
+                },
+            )
+    except Exception as e:
+        print(f"Error notify_user_profile_updated: {e}")
 
 class LoginView(APIView):
     """
@@ -69,12 +108,22 @@ class UserProfileView(APIView):
     """
     Получение данных текущего пользователя
     GET /api/auth/profile/
+    PATCH /api/auth/profile/ — никнейм, имя, смена пароля (email только для чтения)
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         serializer = UserSerializer(request.user)
         return Response(serializer.data)
+
+    def patch(self, request):
+        serializer = ProfileUpdateSerializer(
+            request.user, data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        _notify_user_profile_updated(user)
+        return Response(UserSerializer(user).data)
     
 class RegisterView(APIView):
     permission_classes = [AllowAny]

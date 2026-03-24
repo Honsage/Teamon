@@ -1,4 +1,5 @@
 # chats/views.py
+import re
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -18,6 +19,47 @@ from projects.models import Project
 
 
 User = get_user_model()
+
+
+def apply_mentions_to_participants(chat, message, sender):
+    """Помечает упоминания @username (никнейм или локальная часть email) для участников чата."""
+    try:
+        tags = set(re.findall(r"@([\w.]+)", message.text or ""))
+    except Exception:
+        return
+    if not tags:
+        return
+    tags_lower = {t.lower() for t in tags}
+    channel_layer = get_channel_layer()
+    for cp in ChatParticipant.objects.filter(chat=chat).select_related("user"):
+        u = cp.user
+        if u.id == sender.id:
+            continue
+        uname = (u.username or "").lower()
+        email_local = (u.email or "").split("@")[0].lower()
+        if uname in tags_lower or email_local in tags_lower:
+            ChatParticipant.objects.filter(pk=cp.pk).update(has_unread_mention=True)
+            try:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{u.id}",
+                    {"type": "notify_chat_mention", "chat_id": chat.id},
+                )
+            except Exception as e:
+                print(f"mention notify: {e}")
+
+
+def notify_chat_unread_updated_event(chat):
+    """Сообщает всем участникам обновить счётчики непрочитанного в списке чатов."""
+    try:
+        channel_layer = get_channel_layer()
+        for user_id in chat.participants.values_list("id", flat=True):
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}",
+                {"type": "notify_chat_unread_updated", "chat_id": chat.id},
+            )
+    except Exception as e:
+        print(f"Error notify_chat_unread_updated_event: {e}")
+
 
 class ChatViewSet(viewsets.ModelViewSet):
     serializer_class = ChatSerializer
@@ -335,6 +377,60 @@ class ChatViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(chat).data)
 
     @action(detail=True, methods=['post'])
+    def mark_read(self, request, pk=None):
+        """
+        Прочитать чат: без тела — до последнего сообщения (как раньше).
+        С телом {"message_id": N} — продвинуть last_read не дальше N (по мере прокрутки).
+        """
+        chat = self.get_object()
+        cp = ChatParticipant.objects.filter(chat=chat, user=request.user).first()
+        if not cp:
+            return Response({'error': 'Not a participant'}, status=status.HTTP_400_BAD_REQUEST)
+        message_id = request.data.get('message_id')
+        update_fields = []
+
+        if message_id is not None:
+            try:
+                mid = int(message_id)
+            except (TypeError, ValueError):
+                return Response({'error': 'Invalid message_id'}, status=status.HTTP_400_BAD_REQUEST)
+            msg = Message.objects.filter(chat=chat, is_deleted=False, pk=mid).first()
+            if not msg:
+                return Response({'error': 'Message not found'}, status=status.HTTP_404_NOT_FOUND)
+            old_last_id = cp.last_read_message_id or 0
+            if msg.id > old_last_id:
+                cp.last_read_message = msg
+                update_fields.append('last_read_message')
+        else:
+            last = (
+                Message.objects.filter(chat=chat, is_deleted=False)
+                .order_by('-id')
+                .first()
+            )
+            cp.has_unread_mention = False
+            update_fields.append('has_unread_mention')
+            if last:
+                cp.last_read_message = last
+                update_fields.append('last_read_message')
+            elif cp.last_read_message_id is not None:
+                cp.last_read_message = None
+                update_fields.append('last_read_message')
+
+        last_id = cp.last_read_message_id
+        unread_qs = Message.objects.filter(chat=chat, is_deleted=False).exclude(sender=request.user)
+        if last_id:
+            unread_qs = unread_qs.filter(id__gt=last_id)
+        if unread_qs.count() == 0 and cp.has_unread_mention:
+            cp.has_unread_mention = False
+            if 'has_unread_mention' not in update_fields:
+                update_fields.append('has_unread_mention')
+
+        if update_fields:
+            cp.save(update_fields=list(dict.fromkeys(update_fields)))
+        notify_chat_unread_updated_event(chat)
+        return Response(self.get_serializer(chat).data)
+
+    @action(detail=True, methods=['post'])
     def update_participant_role(self, request, pk=None):
         chat = self.get_object()
         if chat.chat_type != 'group':
@@ -551,9 +647,15 @@ class ChatViewSet(viewsets.ModelViewSet):
         self.notify_chat_deleted(chat_id, user_ids)
 
     def notify_kanban_updated(self, chat):
-        """Уведомляет участников об обновлении канбан-доски."""
+        """Уведомляет участников об обновлении канбан-доски (payload + группа чата для realtime)."""
         try:
             channel_layer = get_channel_layer()
+            board = ChatKanbanBoard.objects.filter(chat=chat).first()
+            board_data = (
+                board.data
+                if board
+                else {"todo": [], "inProgress": [], "done": []}
+            )
             user_ids = list(chat.participants.values_list("id", flat=True))
             for user_id in user_ids:
                 async_to_sync(channel_layer.group_send)(
@@ -561,8 +663,16 @@ class ChatViewSet(viewsets.ModelViewSet):
                     {
                         "type": "notify_chat_kanban_updated",
                         "chat_id": chat.id,
+                        "kanban_data": board_data,
                     },
                 )
+            async_to_sync(channel_layer.group_send)(
+                f"chat_{chat.id}",
+                {
+                    "type": "chat_kanban_board",
+                    "kanban_data": board_data,
+                },
+            )
         except Exception as e:
             print(f"Error sending kanban updated notification: {e}")
 
@@ -631,9 +741,12 @@ class MessageViewSet(viewsets.ModelViewSet):
         
         # Обновляем updated_at чата
         Chat.objects.filter(id=chat_id).update(updated_at=message.created_at)
+
+        apply_mentions_to_participants(message.chat, message, self.request.user)
         
         # Отправляем уведомление через вебсокеты всем участникам чата
         self.notify_participants(message)
+        notify_chat_unread_updated_event(message.chat)
         
         return message
 

@@ -54,6 +54,14 @@ class ChatParticipant(models.Model):
     joined_at = models.DateTimeField(auto_now_add=True)
     is_admin = models.BooleanField(default=False)  # Для групповых чатов
     role_title = models.CharField(max_length=120, blank=True, default="")
+    last_read_message = models.ForeignKey(
+        'Message',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+    )
+    has_unread_mention = models.BooleanField(default=False)
     
     class Meta:
         unique_together = ['user', 'chat']

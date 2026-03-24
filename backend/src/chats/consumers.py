@@ -180,6 +180,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'joined_at': event['joined_at']
         }))
 
+    async def chat_kanban_board(self, event):
+        """Обновление канбан-доски чата (для клиентов в ws/chat/{id}/)."""
+        await self.send(text_data=json.dumps({
+            'type': 'kanban_board_updated',
+            'data': event['kanban_data'],
+        }))
+
     @database_sync_to_async
     def check_chat_access(self):
         """Проверяет, имеет ли пользователь доступ к чату"""
@@ -289,7 +296,28 @@ class UserConsumer(AsyncWebsocketConsumer):
 
     async def notify_chat_kanban_updated(self, event):
         """Уведомление об изменении канбан-доски чата."""
-        await self.send(text_data=json.dumps({
+        payload = {
             'type': 'chat_kanban_updated_notification',
             'chat_id': event['chat_id'],
+        }
+        if 'kanban_data' in event:
+            payload['kanban_data'] = event['kanban_data']
+        await self.send(text_data=json.dumps(payload))
+
+    async def notify_chat_unread_updated(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'chat_unread_updated_notification',
+            'chat_id': event['chat_id'],
+        }))
+
+    async def notify_chat_mention(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'chat_mention_notification',
+            'chat_id': event['chat_id'],
+        }))
+
+    async def notify_user_profile_updated(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'user_profile_updated_notification',
+            'user': event['user'],
         }))

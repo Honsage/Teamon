@@ -60,7 +60,88 @@ class UserSerializer(serializers.ModelSerializer):
             "display_name",
             "date_joined",
         )
-        read_only_fields = ("id", "username", "date_joined")
+        read_only_fields = ("id", "email", "date_joined")
+
+    def get_full_name(self, obj):
+        if obj.first_name or obj.last_name:
+            return f"{obj.first_name} {obj.last_name}".strip()
+        return obj.email
+
+    def get_display_name(self, obj):
+        return self.get_full_name(obj)
+
+
+class ProfileUpdateSerializer(serializers.ModelSerializer):
+    """Обновление профиля: никнейм, имя; смена пароля по текущему паролю. Email менять нельзя."""
+
+    current_password = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, style={"input_type": "password"}
+    )
+    new_password = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, style={"input_type": "password"}
+    )
+    new_password2 = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, style={"input_type": "password"}
+    )
+
+    class Meta:
+        model = User
+        fields = (
+            "username",
+            "first_name",
+            "last_name",
+            "current_password",
+            "new_password",
+            "new_password2",
+        )
+        extra_kwargs = {
+            "first_name": {"required": False, "allow_blank": True},
+            "last_name": {"required": False, "allow_blank": True},
+            "username": {"required": False},
+        }
+
+    def validate_username(self, value):
+        if value is None:
+            return self.instance.username
+        v = (value or "").strip()
+        if not v:
+            raise serializers.ValidationError("Укажите никнейм.")
+        qs = User.objects.exclude(pk=self.instance.pk).filter(username__iexact=v)
+        if qs.exists():
+            raise serializers.ValidationError("Пользователь с таким никнеймом уже существует.")
+        return v
+
+    def validate(self, data):
+        new_pw = (data.get("new_password") or "").strip()
+        new_pw2 = (data.get("new_password2") or "").strip()
+        cur = (data.get("current_password") or "").strip()
+        if new_pw or new_pw2:
+            if new_pw != new_pw2:
+                raise serializers.ValidationError({"new_password2": "Пароли не совпадают."})
+            if not new_pw:
+                raise serializers.ValidationError({"new_password": "Введите новый пароль."})
+            if not cur:
+                raise serializers.ValidationError(
+                    {"current_password": "Введите текущий пароль для смены."}
+                )
+        return data
+
+    def update(self, instance, validated_data):
+        validated_data.pop("new_password2", None)
+        new_pw = (validated_data.pop("new_password", None) or "").strip()
+        cur = (validated_data.pop("current_password", None) or "").strip()
+        if new_pw:
+            if not instance.check_password(cur):
+                raise serializers.ValidationError(
+                    {"current_password": "Неверный текущий пароль."}
+                )
+            instance.set_password(new_pw)
+        else:
+            validated_data.pop("current_password", None)
+        for attr, val in validated_data.items():
+            setattr(instance, attr, val)
+        instance.save()
+        return instance
 
     def get_full_name(self, obj):
         if obj.first_name or obj.last_name:

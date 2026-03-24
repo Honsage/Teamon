@@ -14,7 +14,7 @@ class UserSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = User
-        fields = ['id', 'email', 'first_name', 'last_name', 'full_name', 'display_name']
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'full_name', 'display_name']
     
     def get_full_name(self, obj):
         if obj.first_name or obj.last_name:
@@ -85,6 +85,8 @@ class ChatSerializer(serializers.ModelSerializer):
     participant_count = serializers.IntegerField(source='chatparticipant_set.count', read_only=True)
     project_details = ProjectSerializer(source='project', read_only=True)
     has_kanban = serializers.SerializerMethodField()
+    unread_count = serializers.SerializerMethodField()
+    has_unread_mention = serializers.SerializerMethodField()
     
     # Поля для создания проекта вместе с чатом
     project_name = serializers.CharField(write_only=True, required=False)
@@ -102,6 +104,7 @@ class ChatSerializer(serializers.ModelSerializer):
             'id', 'chat_type', 'name', 'project', 'project_details',
             'created_at', 'updated_at', 'participants',
             'last_message', 'participant_count', 'has_kanban',
+            'unread_count', 'has_unread_mention',
             'project_name', 'project_description', 'participant_ids'  # write_only поля
         ]
         read_only_fields = ['created_at', 'updated_at', 'project']
@@ -141,17 +144,31 @@ class ChatSerializer(serializers.ModelSerializer):
             return hasattr(obj, 'kanban_board')
         except (OperationalError, ProgrammingError):
             return False
-    
-    def validate(self, data):
-        chat_type = data.get('chat_type')
-        
-        if chat_type == 'private' and data.get('name'):
-            raise serializers.ValidationError(
-                "Private chats cannot have a name"
-            )
-        
-        return data
-    
+
+    def get_unread_count(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return 0
+        try:
+            cp = ChatParticipant.objects.get(chat=obj, user=request.user)
+        except ChatParticipant.DoesNotExist:
+            return 0
+        last_id = cp.last_read_message_id
+        qs = obj.messages.filter(is_deleted=False).exclude(sender=request.user)
+        if last_id:
+            qs = qs.filter(id__gt=last_id)
+        return qs.count()
+
+    def get_has_unread_mention(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        try:
+            cp = ChatParticipant.objects.get(chat=obj, user=request.user)
+        except ChatParticipant.DoesNotExist:
+            return False
+        return bool(cp.has_unread_mention)
+
     def create(self, validated_data):
         # Извлекаем поля для проекта
         project_name = validated_data.pop('project_name', None)
