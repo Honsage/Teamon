@@ -91,8 +91,8 @@ class RegisterSerializer(serializers.ModelSerializer):
             "last_name",
         )
         extra_kwargs = {
-            "first_name": {"required": True},
-            "last_name": {"required": True},
+            "first_name": {"required": False, "allow_blank": True},
+            "last_name": {"required": False, "allow_blank": True},
             # username опционален – если не передан, модель подставит email
             "username": {"required": False, "allow_blank": True},
         }

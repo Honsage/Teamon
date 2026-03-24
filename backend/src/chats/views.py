@@ -4,15 +4,17 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
+from django.db import connection
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
-from .models import Chat, Message, ChatParticipant, Attachment
+from .models import Chat, Message, ChatParticipant, Attachment, ChatHidden, ChatKanbanBoard
 from .serializers import (
     ChatSerializer, MessageSerializer, 
-    ChatParticipantSerializer, AttachmentSerializer
+    ChatParticipantSerializer, AttachmentSerializer, ChatKanbanBoardSerializer
 )
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
+from projects.models import Project
 
 
 User = get_user_model()
@@ -21,12 +23,27 @@ class ChatViewSet(viewsets.ModelViewSet):
     serializer_class = ChatSerializer
     permission_classes = [IsAuthenticated]
 
+    def _table_exists(self, table_name):
+        try:
+            return table_name in connection.introspection.table_names()
+        except Exception:
+            return False
+
     def get_queryset(self):
         """Возвращает чаты текущего пользователя"""
-        # Упрощаем запрос - убираем сложные prefetch_related
-        return Chat.objects.filter(
+        qs = Chat.objects.filter(
             participants=self.request.user
-        ).order_by('-updated_at')
+        ).prefetch_related('chatparticipant_set__user').order_by('-updated_at')
+        if self._table_exists('chats_chathidden'):
+            qs = qs.exclude(hidden_for__user=self.request.user)
+        return qs
+
+    def _is_group_admin(self, chat, user):
+        return ChatParticipant.objects.filter(
+            chat=chat,
+            user=user,
+            is_admin=True
+        ).exists()
 
     def create(self, request, *args, **kwargs):
         """Создание нового чата (с возможностью создания проекта)"""
@@ -51,6 +68,9 @@ class ChatViewSet(viewsets.ModelViewSet):
                     other_user_id
                 )
                 if existing_chat:
+                    # Если чат был скрыт пользователем, "возвращаем" его.
+                    if self._table_exists('chats_chathidden'):
+                        ChatHidden.objects.filter(chat=existing_chat, user=request.user).delete()
                     serializer = self.get_serializer(existing_chat)
                     return Response(serializer.data, status=status.HTTP_200_OK)
         
@@ -109,6 +129,9 @@ class ChatViewSet(viewsets.ModelViewSet):
         # Получаем обновленный чат с полными данными
         chat = Chat.objects.get(id=chat.id)
         response_serializer = self.get_serializer(chat)
+
+        # Уведомляем участников о новом чате в реальном времени.
+        self.notify_chat_created(chat)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
@@ -141,11 +164,7 @@ class ChatViewSet(viewsets.ModelViewSet):
                 )
             
             # Проверяем, что текущий пользователь админ
-            if not ChatParticipant.objects.filter(
-                chat=chat, 
-                user=request.user, 
-                is_admin=True
-            ).exists():
+            if not self._is_group_admin(chat, request.user):
                 return Response(
                     {'error': 'Only admins can add participants'},
                     status=status.HTTP_403_FORBIDDEN
@@ -171,6 +190,8 @@ class ChatViewSet(viewsets.ModelViewSet):
             
             # Отправляем уведомление через вебсокеты
             self.notify_new_participant(chat, participant)
+            self.notify_chat_created(chat, only_user_ids=[user_to_add.id])
+            self.notify_chat_participants_updated(chat)
             
             return Response(serializer.data, status=status.HTTP_201_CREATED)
             
@@ -179,6 +200,255 @@ class ChatViewSet(viewsets.ModelViewSet):
                 {'error': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=True, methods=['post'])
+    def remove_participant(self, request, pk=None):
+        """Удаление участника из группового чата (только админ)."""
+        chat = self.get_object()
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({'error': 'user_id required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if chat.chat_type != 'group':
+            return Response(
+                {'error': 'Only group chats support participant management'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not self._is_group_admin(chat, request.user):
+            return Response(
+                {'error': 'Only admins can remove participants'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if str(user_id) == str(request.user.id):
+            return Response(
+                {'error': 'Use leave_chat to leave the chat yourself'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        participant = ChatParticipant.objects.filter(chat=chat, user_id=user_id).first()
+        if not participant:
+            return Response({'error': 'Participant not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Чтобы в чате оставался хотя бы один админ.
+        if participant.is_admin:
+            admins_count = ChatParticipant.objects.filter(chat=chat, is_admin=True).count()
+            if admins_count <= 1:
+                return Response(
+                    {'error': 'Cannot remove the last admin from chat'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        removed_user_id = participant.user_id
+        participant.delete()
+
+        self.notify_chat_participants_updated(chat)
+        self.notify_chat_removed_for_users(chat.id, [removed_user_id])
+        return Response({'status': 'removed'})
+
+    @action(detail=True, methods=['post'])
+    def leave_chat(self, request, pk=None):
+        """Покинуть чат текущим пользователем."""
+        chat = self.get_object()
+        participant = ChatParticipant.objects.filter(chat=chat, user=request.user).first()
+        if not participant:
+            return Response({'error': 'You are not a participant'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Для личного чата трактуем как скрытие чата для себя.
+        if chat.chat_type == 'private':
+            if self._table_exists('chats_chathidden'):
+                ChatHidden.objects.get_or_create(chat=chat, user=request.user)
+            self.notify_chat_deleted(chat.id, [request.user.id])
+            return Response({'status': 'left'})
+
+        admins_count = ChatParticipant.objects.filter(chat=chat, is_admin=True).count()
+        if participant.is_admin and admins_count <= 1:
+            return Response(
+                {'error': 'Вы являетесь единственным администратором. Назначьте другого администратора или удалите группу.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        full_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.email
+        leave_message = Message.objects.create(
+            chat=chat,
+            sender=request.user,
+            text=f"{full_name} покинул группу"
+        )
+        Chat.objects.filter(id=chat.id).update(updated_at=leave_message.created_at)
+        self.notify_chat_message(leave_message)
+
+        participant.delete()
+        remaining = ChatParticipant.objects.filter(chat=chat)
+        if not remaining.exists():
+            chat.delete()
+        else:
+            self.notify_chat_participants_updated(chat)
+
+        self.notify_chat_deleted(chat.id, [request.user.id])
+        return Response({'status': 'left'})
+
+    @action(detail=True, methods=['post'])
+    def rename_chat(self, request, pk=None):
+        chat = self.get_object()
+        if chat.chat_type != 'group':
+            return Response({'error': 'Only group chats can be renamed'}, status=status.HTTP_400_BAD_REQUEST)
+        if not self._is_group_admin(chat, request.user):
+            return Response({'error': 'Only admins can rename chat'}, status=status.HTTP_403_FORBIDDEN)
+        name = (request.data.get('name') or '').strip()
+        if not name:
+            return Response({'error': 'Название чата не может быть пустым'}, status=status.HTTP_400_BAD_REQUEST)
+        chat.name = name
+        chat.save(update_fields=['name', 'updated_at'])
+        self.notify_chat_participants_updated(chat)
+        return Response(self.get_serializer(chat).data)
+
+    @action(detail=True, methods=['post'])
+    def update_project_details(self, request, pk=None):
+        chat = self.get_object()
+        if chat.chat_type != 'group':
+            return Response({'error': 'Only group chats can have project details'}, status=status.HTTP_400_BAD_REQUEST)
+        if not self._is_group_admin(chat, request.user):
+            return Response({'error': 'Only admins can edit project details'}, status=status.HTTP_403_FORBIDDEN)
+
+        project_name = (request.data.get('project_name') or '').strip()
+        project_description = (request.data.get('project_description') or '').strip()
+        if not project_name:
+            return Response({'error': 'Название проекта не может быть пустым'}, status=status.HTTP_400_BAD_REQUEST)
+
+        project = chat.project
+        if project is None:
+            project = Project.objects.create(
+                name=project_name,
+                description=project_description,
+                created_by=request.user
+            )
+            chat.project = project
+            chat.save(update_fields=['project', 'updated_at'])
+        else:
+            project.name = project_name
+            project.description = project_description
+            project.save(update_fields=['name', 'description', 'updated_at'])
+            Chat.objects.filter(id=chat.id).update(updated_at=project.updated_at)
+
+        self.notify_chat_participants_updated(chat)
+        return Response(self.get_serializer(chat).data)
+
+    @action(detail=True, methods=['post'])
+    def update_participant_role(self, request, pk=None):
+        chat = self.get_object()
+        if chat.chat_type != 'group':
+            return Response({'error': 'Only group chats support role management'}, status=status.HTTP_400_BAD_REQUEST)
+        if not self._is_group_admin(chat, request.user):
+            return Response({'error': 'Only admins can manage roles'}, status=status.HTTP_403_FORBIDDEN)
+
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({'error': 'user_id required'}, status=status.HTTP_400_BAD_REQUEST)
+        participant = ChatParticipant.objects.filter(chat=chat, user_id=user_id).first()
+        if not participant:
+            return Response({'error': 'Participant not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        is_admin = request.data.get('is_admin')
+        if is_admin is not None:
+            next_is_admin = bool(is_admin)
+            if participant.user_id == request.user.id and not next_is_admin:
+                admins_count = ChatParticipant.objects.filter(chat=chat, is_admin=True).count()
+                if admins_count <= 1:
+                    return Response(
+                        {'error': 'Нельзя снять роль единственного администратора с самого себя.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            participant.is_admin = next_is_admin
+
+        role_title = request.data.get('role_title')
+        if role_title is not None:
+            participant.role_title = str(role_title).strip()[:120]
+
+        participant.save(update_fields=['is_admin', 'role_title'])
+        self.notify_chat_participants_updated(chat)
+        return Response(ChatParticipantSerializer(participant).data)
+
+    def destroy(self, request, *args, **kwargs):
+        chat = self.get_object()
+        participant_qs = ChatParticipant.objects.filter(chat=chat)
+        participant_user_ids = list(participant_qs.values_list('user_id', flat=True))
+
+        if chat.chat_type == 'group' and not self._is_group_admin(chat, request.user):
+            return Response(
+                {'error': 'Only admins can delete group chat'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        chat_id = chat.id
+        chat.delete()
+        self.notify_chat_deleted(chat_id, participant_user_ids)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'])
+    def delete_for_me(self, request, pk=None):
+        """Скрыть чат только для текущего пользователя."""
+        chat = self.get_object()
+        if not self._table_exists('chats_chathidden'):
+            return Response(
+                {'error': 'Chat hide feature is unavailable until migrations are applied'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        ChatHidden.objects.get_or_create(chat=chat, user=request.user)
+        self.notify_chat_deleted(chat.id, [request.user.id])
+        return Response({'status': 'hidden'})
+
+    @action(detail=True, methods=['post'])
+    def create_kanban(self, request, pk=None):
+        chat = self.get_object()
+        if not self._table_exists('chats_chatkanbanboard'):
+            return Response(
+                {'error': 'Kanban feature is unavailable until migrations are applied'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        if chat.chat_type != 'group':
+            return Response({'error': 'Kanban available only for group chats'}, status=status.HTTP_400_BAD_REQUEST)
+        if not self._is_group_admin(chat, request.user):
+            return Response({'error': 'Only admins can create kanban'}, status=status.HTTP_403_FORBIDDEN)
+
+        board, _ = ChatKanbanBoard.objects.get_or_create(
+            chat=chat,
+            defaults={
+                'data': {
+                    'todo': [],
+                    'inProgress': [],
+                    'done': []
+                }
+            }
+        )
+        self.notify_kanban_updated(chat)
+        return Response(ChatKanbanBoardSerializer(board).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get', 'put'])
+    def kanban(self, request, pk=None):
+        chat = self.get_object()
+        if not self._table_exists('chats_chatkanbanboard'):
+            return Response(
+                {'error': 'Kanban feature is unavailable until migrations are applied'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        if chat.chat_type != 'group':
+            return Response({'error': 'Kanban available only for group chats'}, status=status.HTTP_400_BAD_REQUEST)
+
+        board = ChatKanbanBoard.objects.filter(chat=chat).first()
+        if request.method == 'GET':
+            if not board:
+                return Response({'error': 'Kanban not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response(ChatKanbanBoardSerializer(board).data)
+
+        if not board:
+            return Response({'error': 'Kanban not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ChatKanbanBoardSerializer(board, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        self.notify_kanban_updated(chat)
+        return Response(serializer.data)
 
     def check_existing_private_chat(self, user1_id, user2_id):
         """Проверяет существование личного чата между двумя пользователями"""
@@ -225,6 +495,100 @@ class ChatViewSet(viewsets.ModelViewSet):
             # Логируем ошибку, но не прерываем выполнение
             print(f"Error sending websocket notification: {e}")
 
+    def notify_chat_created(self, chat, only_user_ids=None):
+        """Уведомляет участников о создании/подключении к чату."""
+        try:
+            channel_layer = get_channel_layer()
+            user_ids = (
+                list(only_user_ids)
+                if only_user_ids is not None
+                else list(chat.participants.values_list("id", flat=True))
+            )
+            for user_id in user_ids:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user_id}",
+                    {
+                        "type": "notify_chat_created",
+                        "chat_id": chat.id,
+                    },
+                )
+        except Exception as e:
+            print(f"Error sending chat created notification: {e}")
+
+    def notify_chat_participants_updated(self, chat):
+        """Уведомляет всех участников о смене состава чата."""
+        try:
+            channel_layer = get_channel_layer()
+            user_ids = list(chat.participants.values_list("id", flat=True))
+            for user_id in user_ids:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user_id}",
+                    {
+                        "type": "notify_chat_participants_updated",
+                        "chat_id": chat.id,
+                    },
+                )
+        except Exception as e:
+            print(f"Error sending participants update notification: {e}")
+
+    def notify_chat_deleted(self, chat_id, user_ids):
+        """Уведомляет пользователей, что чат удален."""
+        try:
+            channel_layer = get_channel_layer()
+            for user_id in user_ids:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user_id}",
+                    {
+                        "type": "notify_chat_deleted",
+                        "chat_id": chat_id,
+                    },
+                )
+        except Exception as e:
+            print(f"Error sending chat deleted notification: {e}")
+
+    def notify_chat_removed_for_users(self, chat_id, user_ids):
+        """Уведомляет удаленных участников о потере доступа к чату."""
+        self.notify_chat_deleted(chat_id, user_ids)
+
+    def notify_kanban_updated(self, chat):
+        """Уведомляет участников об обновлении канбан-доски."""
+        try:
+            channel_layer = get_channel_layer()
+            user_ids = list(chat.participants.values_list("id", flat=True))
+            for user_id in user_ids:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user_id}",
+                    {
+                        "type": "notify_chat_kanban_updated",
+                        "chat_id": chat.id,
+                    },
+                )
+        except Exception as e:
+            print(f"Error sending kanban updated notification: {e}")
+
+    def notify_chat_message(self, message):
+        """Шлет системное сообщение в realtime всем участникам чата."""
+        try:
+            channel_layer = get_channel_layer()
+            sender = message.sender
+            sender_full_name = f"{sender.first_name} {sender.last_name}".strip() or sender.email
+            async_to_sync(channel_layer.group_send)(
+                f"chat_{message.chat.id}",
+                {
+                    "type": "chat_message",
+                    "message_id": message.id,
+                    "text": message.text,
+                    "user_id": sender.id,
+                    "email": sender.email,
+                    "full_name": sender_full_name,
+                    "display_name": sender_full_name,
+                    "created_at": message.created_at.isoformat(),
+                    "reply_to_data": None,
+                },
+            )
+        except Exception as e:
+            print(f"Error sending chat message notification: {e}")
+
 
 class MessageViewSet(viewsets.ModelViewSet):
     serializer_class = MessageSerializer
@@ -234,7 +598,11 @@ class MessageViewSet(viewsets.ModelViewSet):
         """Возвращает сообщения из чата, если пользователь участник"""
         chat_id = self.request.query_params.get('chat_id')
         if not chat_id:
-            return Message.objects.none()
+            if getattr(self, 'action', None) == 'list':
+                return Message.objects.none()
+            return Message.objects.filter(
+                chat__participants=self.request.user
+            ).select_related('sender', 'reply_to')
         
         # Проверяем доступ к чату
         if not ChatParticipant.objects.filter(
@@ -272,10 +640,10 @@ class MessageViewSet(viewsets.ModelViewSet):
     def notify_participants(self, message):
         """Отправляет уведомление о новом сообщении через вебсокеты"""
         channel_layer = get_channel_layer()
-        
+
         # Получаем всех участников чата кроме отправителя
         participants = message.chat.participants.exclude(id=message.sender.id)
-        
+
         sender = message.sender
         # Формируем отображаемое имя отправителя
         if sender.first_name or sender.last_name:
@@ -284,7 +652,44 @@ class MessageViewSet(viewsets.ModelViewSet):
         else:
             sender_full_name = sender.email
             sender_display_name = sender.email
-        
+
+        created_at = message.created_at.isoformat()
+
+        # Обновление открытого чата в реальном времени для всех его участников.
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{message.chat.id}",
+            {
+                "type": "chat_message",
+                "message_id": message.id,
+                "text": message.text,
+                "user_id": sender.id,
+                "email": sender.email,
+                "full_name": sender_full_name,
+                "display_name": sender_display_name,
+                "created_at": created_at,
+                "reply_to_data": (
+                    {
+                        "id": message.reply_to.id,
+                        "text": message.reply_to.text[:100],
+                        "sender": {
+                            "id": message.reply_to.sender.id,
+                            "full_name": (
+                                f"{message.reply_to.sender.first_name} {message.reply_to.sender.last_name}".strip()
+                                or message.reply_to.sender.email
+                            ),
+                            "display_name": (
+                                f"{message.reply_to.sender.first_name} {message.reply_to.sender.last_name}".strip()
+                                or message.reply_to.sender.email
+                            ),
+                        },
+                    }
+                    if message.reply_to_id
+                    else None
+                ),
+            },
+        )
+
+        # Параллельно отправляем персональные уведомления (например, для сайдбара/бейджей).
         for user in participants:
             async_to_sync(channel_layer.group_send)(
                 f"user_{user.id}",
@@ -298,7 +703,7 @@ class MessageViewSet(viewsets.ModelViewSet):
                     "sender_full_name": sender_full_name,
                     "sender_display_name": sender_display_name,
                     "text_preview": message.text[:50],
-                    "created_at": message.created_at.isoformat(),
+                    "created_at": created_at,
                 },
             )
     
@@ -316,5 +721,20 @@ class MessageViewSet(viewsets.ModelViewSet):
         
         message.is_deleted = True
         message.save()
+        self.notify_message_deleted(message)
         
         return Response({'status': 'deleted'})
+
+    def notify_message_deleted(self, message):
+        """Уведомляет участников чата об удалении сообщения в реальном времени."""
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"chat_{message.chat.id}",
+                {
+                    "type": "chat_message_deleted",
+                    "message_id": message.id,
+                },
+            )
+        except Exception as e:
+            print(f"Error sending message deleted notification: {e}")

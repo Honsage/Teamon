@@ -137,7 +137,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'email': event['email'],
             'full_name': event['full_name'],
             'display_name': event['display_name'],
-            'created_at': event['created_at']
+            'created_at': event['created_at'],
+            'reply_to_data': event.get('reply_to_data')
+        }))
+
+    async def chat_message_deleted(self, event):
+        """Уведомление об удалении сообщения."""
+        await self.send(text_data=json.dumps({
+            'type': 'message_deleted',
+            'message_id': event['message_id'],
         }))
 
     async def user_connected(self, event):
@@ -256,4 +264,32 @@ class UserConsumer(AsyncWebsocketConsumer):
             'sender_display_name': event['sender_display_name'],
             'text_preview': event['text_preview'],
             'created_at': event['created_at']
+        }))
+
+    async def notify_chat_created(self, event):
+        """Уведомление о создании/добавлении в чат."""
+        await self.send(text_data=json.dumps({
+            'type': 'chat_created_notification',
+            'chat_id': event['chat_id'],
+        }))
+
+    async def notify_chat_participants_updated(self, event):
+        """Уведомление о смене участников чата."""
+        await self.send(text_data=json.dumps({
+            'type': 'chat_participants_updated_notification',
+            'chat_id': event['chat_id'],
+        }))
+
+    async def notify_chat_deleted(self, event):
+        """Уведомление об удалении чата."""
+        await self.send(text_data=json.dumps({
+            'type': 'chat_deleted_notification',
+            'chat_id': event['chat_id'],
+        }))
+
+    async def notify_chat_kanban_updated(self, event):
+        """Уведомление об изменении канбан-доски чата."""
+        await self.send(text_data=json.dumps({
+            'type': 'chat_kanban_updated_notification',
+            'chat_id': event['chat_id'],
         }))

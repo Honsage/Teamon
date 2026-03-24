@@ -1,7 +1,9 @@
 # chats/serializers.py
+import re
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Chat, Message, ChatParticipant, Attachment
+from django.db.utils import OperationalError, ProgrammingError
+from .models import Chat, Message, ChatParticipant, Attachment, ChatKanbanBoard
 from projects.models import Project
 
 User = get_user_model()
@@ -34,7 +36,7 @@ class ChatParticipantSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = ChatParticipant
-        fields = ['id', 'user', 'user_id', 'joined_at', 'is_admin']
+        fields = ['id', 'user', 'user_id', 'joined_at', 'is_admin', 'role_title']
         read_only_fields = ['joined_at']
     
     def create(self, validated_data):
@@ -78,22 +80,29 @@ class MessageSerializer(serializers.ModelSerializer):
         return None
 
 class ChatSerializer(serializers.ModelSerializer):
-    participants = ChatParticipantSerializer(many=True, read_only=True)
+    participants = ChatParticipantSerializer(source='chatparticipant_set', many=True, read_only=True)
     last_message = serializers.SerializerMethodField()
-    participant_count = serializers.IntegerField(source='participants.count', read_only=True)
+    participant_count = serializers.IntegerField(source='chatparticipant_set.count', read_only=True)
     project_details = ProjectSerializer(source='project', read_only=True)
+    has_kanban = serializers.SerializerMethodField()
     
     # Поля для создания проекта вместе с чатом
     project_name = serializers.CharField(write_only=True, required=False)
     project_description = serializers.CharField(write_only=True, required=False)
+    participant_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        write_only=True,
+        required=False,
+        default=list
+    )
     
     class Meta:
         model = Chat
         fields = [
             'id', 'chat_type', 'name', 'project', 'project_details',
             'created_at', 'updated_at', 'participants',
-            'last_message', 'participant_count',
-            'project_name', 'project_description'  # write_only поля
+            'last_message', 'participant_count', 'has_kanban',
+            'project_name', 'project_description', 'participant_ids'  # write_only поля
         ]
         read_only_fields = ['created_at', 'updated_at', 'project']
     
@@ -126,6 +135,12 @@ class ChatSerializer(serializers.ModelSerializer):
             },
             "created_at": last_msg.created_at,
         }
+
+    def get_has_kanban(self, obj):
+        try:
+            return hasattr(obj, 'kanban_board')
+        except (OperationalError, ProgrammingError):
+            return False
     
     def validate(self, data):
         chat_type = data.get('chat_type')
@@ -135,19 +150,30 @@ class ChatSerializer(serializers.ModelSerializer):
                 "Private chats cannot have a name"
             )
         
-        if chat_type == 'group':
-            # Для группового чата нужно имя
-            if not data.get('name') and not data.get('project_name'):
-                raise serializers.ValidationError(
-                    "Group chat requires a name or project_name"
-                )
-        
         return data
     
     def create(self, validated_data):
         # Извлекаем поля для проекта
         project_name = validated_data.pop('project_name', None)
         project_description = validated_data.pop('project_description', '')
+        # Поле используется во view, в модель Chat не передаём.
+        validated_data.pop('participant_ids', None)
+
+        # Если у группового чата не задано имя, подставляем "Новый групповой чат N".
+        if validated_data.get('chat_type') == 'group' and not validated_data.get('name'):
+            existing_names = Chat.objects.filter(
+                chat_type='group',
+                name__startswith='Новый групповой чат'
+            ).values_list('name', flat=True)
+            max_index = 0
+            for existing_name in existing_names:
+                if existing_name == 'Новый групповой чат':
+                    max_index = max(max_index, 1)
+                    continue
+                match = re.fullmatch(r'Новый групповой чат\s+(\d+)', existing_name or '')
+                if match:
+                    max_index = max(max_index, int(match.group(1)))
+            validated_data['name'] = f'Новый групповой чат {max_index + 1}'
         
         # Создаем чат
         chat = Chat.objects.create(**validated_data)
@@ -159,9 +185,15 @@ class ChatSerializer(serializers.ModelSerializer):
                 description=project_description,
                 created_by=self.context['request'].user
             )
-            # Привязываем проект к чату
+            # Привязываем проект к чату, но не подменяем имя чата названием проекта.
             chat.project = project
-            chat.name = project_name  # Используем имя проекта как имя чата
             chat.save()
         
         return chat
+
+
+class ChatKanbanBoardSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ChatKanbanBoard
+        fields = ['chat', 'data', 'created_at', 'updated_at']
+        read_only_fields = ['chat', 'created_at', 'updated_at']

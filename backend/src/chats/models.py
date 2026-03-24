@@ -53,6 +53,7 @@ class ChatParticipant(models.Model):
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE)
     joined_at = models.DateTimeField(auto_now_add=True)
     is_admin = models.BooleanField(default=False)  # Для групповых чатов
+    role_title = models.CharField(max_length=120, blank=True, default="")
     
     class Meta:
         unique_together = ['user', 'chat']
@@ -118,3 +119,25 @@ class Attachment(models.Model):
     
     def __str__(self):
         return self.filename
+
+
+class ChatHidden(models.Model):
+    """Скрытый для пользователя чат (удаление только для себя)."""
+    chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name='hidden_for')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='hidden_chats')
+    hidden_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ['chat', 'user']
+        indexes = [
+            models.Index(fields=['chat', 'user']),
+            models.Index(fields=['user']),
+        ]
+
+
+class ChatKanbanBoard(models.Model):
+    """Канбан-доска, привязанная к групповому чату."""
+    chat = models.OneToOneField(Chat, on_delete=models.CASCADE, related_name='kanban_board')
+    data = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
