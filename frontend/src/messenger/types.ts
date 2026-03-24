@@ -4,6 +4,7 @@ export type ChatParticipant = {
   role_title?: string;
   user: {
     id: number;
+    username?: string;
     email: string;
     first_name?: string;
     last_name?: string;
@@ -16,6 +17,8 @@ export type Chat = {
   id: number;
   chat_type: "private" | "group";
   name: string | null;
+  unread_count?: number;
+  has_unread_mention?: boolean;
   project_details: { name: string; description?: string } | null;
   last_message: {
     text: string;

@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { useAuth } from "../auth/AuthContext";
 import { ParticipantsModal } from "./ParticipantsModal";
+import SettingsPage from "../settings/SettingsPage";
 
 type ChatParticipant = {
   id: number;
@@ -10,6 +11,7 @@ type ChatParticipant = {
   role_title?: string;
   user: {
     id: number;
+    username?: string;
     email: string;
     first_name?: string;
     last_name?: string;
@@ -23,6 +25,8 @@ type Chat = {
   chat_type: "private" | "group";
   name: string | null;
   has_kanban?: boolean;
+  unread_count?: number;
+  has_unread_mention?: boolean;
   project_details: { name: string; description?: string } | null;
   last_message: {
     text: string;
@@ -50,6 +54,7 @@ type Message = {
   } | null;
   sender: {
     id: number;
+    username?: string;
     full_name: string;
     display_name: string;
   };
@@ -104,7 +109,7 @@ const ChatsSidebar: React.FC<{
       className={
         mobile
           ? "flex flex-col w-full border-r border-slate-800 bg-slate-950"
-          : "hidden md:flex md:flex-col w-80 border-r border-slate-800 bg-slate-950/60"
+          : "hidden lg:flex lg:flex-col w-80 border-r border-slate-800 bg-slate-950/60"
       }
     >
       <div className="px-4 py-4 border-b border-slate-800 flex items-center gap-2">
@@ -197,15 +202,34 @@ const ChatsSidebar: React.FC<{
                 onAfterSelect?.();
               }}
             >
-              <p className="text-sm font-medium truncate">{title}</p>
-              {chat.last_message && (
-                <p className="text-xs text-slate-300 line-clamp-1">
-                  {chat.last_message.sender
-                    ? `${chat.last_message.sender.full_name}: `
-                    : ""}
-                  {chat.last_message.text}
-                </p>
-              )}
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium truncate">{title}</p>
+                  {chat.last_message && (
+                    <p className="text-xs text-slate-300 line-clamp-1">
+                      {chat.last_message.sender
+                        ? `${chat.last_message.sender.full_name}: `
+                        : ""}
+                      {chat.last_message.text}
+                    </p>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  {chat.has_unread_mention && (
+                    <span
+                      className="h-[1.1rem] min-w-[1.1rem] px-0.5 rounded-full bg-accent/25 text-accent text-[10px] font-bold leading-none inline-flex items-center justify-center"
+                      title="Упоминание"
+                    >
+                      @
+                    </span>
+                  )}
+                  {(chat.unread_count ?? 0) > 0 && (
+                    <span className="min-h-[1.1rem] min-w-[1.1rem] px-1 rounded-full bg-red-600 text-white text-[10px] font-semibold leading-none inline-flex items-center justify-center">
+                      {formatUnreadBadge(chat.unread_count ?? 0)}
+                    </span>
+                  )}
+                </div>
+              </div>
             </button>
           );
         })}
@@ -239,6 +263,29 @@ const ChatsSidebar: React.FC<{
     </aside>
   );
 };
+
+const formatUnreadBadge = (n: number): string => {
+  if (n <= 0) return "0";
+  if (n > 999) return "999+";
+  return String(n);
+};
+
+/** Максимальный id сообщения, пересекающего видимую область списка (для поэтапного mark_read). */
+function getMaxVisibleMessageId(container: HTMLDivElement): number {
+  const cr = container.getBoundingClientRect();
+  const nodes = container.querySelectorAll("[data-message-id]");
+  let maxId = 0;
+  nodes.forEach((node) => {
+    const raw = node.getAttribute("data-message-id");
+    const id = raw ? parseInt(raw, 10) : 0;
+    if (!id) return;
+    const r = node.getBoundingClientRect();
+    if (r.bottom > cr.top && r.top < cr.bottom) {
+      maxId = Math.max(maxId, id);
+    }
+  });
+  return maxId;
+}
 
 const normalizeErrorMessage = (raw: string): string =>
   raw
@@ -279,6 +326,7 @@ type MessagesPaneProps = {
   onOpenParticipants: () => void;
   onOpenAddParticipants: () => void;
   canManageParticipants: boolean;
+  onMarkReadUpTo: (messageId: number) => void;
 };
 
 const MessagesPane: React.FC<MessagesPaneProps> = ({
@@ -291,10 +339,15 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
   onDelete,
   onOpenParticipants,
   onOpenAddParticipants,
-  canManageParticipants
+  canManageParticipants,
+  onMarkReadUpTo
 }) => {
   const { user } = useAuth();
   const [text, setText] = useState("");
+  const [mentionState, setMentionState] = useState<{ start: number; query: string } | null>(
+    null
+  );
+  const [mentionHighlight, setMentionHighlight] = useState(0);
   const [showProjectInfo, setShowProjectInfo] = useState(false);
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const messagesAreaRef = useRef<HTMLDivElement | null>(null);
@@ -305,6 +358,49 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
     isMine: boolean;
   } | null>(null);
   const messageRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const markReadFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const markReadPendingMax = useRef(0);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+
+  const flushMarkRead = useCallback(() => {
+    const id = markReadPendingMax.current;
+    markReadPendingMax.current = 0;
+    markReadFlushRef.current = null;
+    if (id > 0 && chat) onMarkReadUpTo(id);
+  }, [chat, onMarkReadUpTo]);
+
+  const scheduleMarkRead = useCallback(
+    (messageId: number) => {
+      if (!chat || messageId <= 0) return;
+      markReadPendingMax.current = Math.max(markReadPendingMax.current, messageId);
+      if (markReadFlushRef.current) clearTimeout(markReadFlushRef.current);
+      markReadFlushRef.current = setTimeout(flushMarkRead, 380);
+    },
+    [chat, flushMarkRead]
+  );
+
+  const updateScrollMetrics = useCallback(() => {
+    const el = messagesAreaRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowScrollDown(distance > 72);
+    const maxId = getMaxVisibleMessageId(el);
+    if (maxId > 0) scheduleMarkRead(maxId);
+  }, [scheduleMarkRead]);
+
+  const scrollMessagesToBottom = useCallback(() => {
+    const el = messagesAreaRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
+
+  useEffect(() => {
+    markReadPendingMax.current = 0;
+    if (markReadFlushRef.current) {
+      clearTimeout(markReadFlushRef.current);
+      markReadFlushRef.current = null;
+    }
+  }, [chat?.id]);
 
   useEffect(() => {
     const close = () => setContextMenu(null);
@@ -336,8 +432,32 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
         top: messagesAreaRef.current.scrollHeight,
         behavior: "smooth"
       });
+      requestAnimationFrame(() => updateScrollMetrics());
     }
-  }, [messages, user?.id]);
+  }, [messages, user?.id, updateScrollMetrics]);
+
+  useEffect(() => {
+    if (!chat || messages.length === 0) {
+      setShowScrollDown(false);
+      return;
+    }
+    const el = messagesAreaRef.current;
+    if (!el) return;
+    const run = () => {
+      updateScrollMetrics();
+      if (el.scrollHeight <= el.clientHeight + 2) {
+        const last = messages[messages.length - 1];
+        if (last) scheduleMarkRead(last.id);
+      }
+    };
+    requestAnimationFrame(run);
+  }, [
+    chat?.id,
+    messages.length,
+    messages[messages.length - 1]?.id,
+    updateScrollMetrics,
+    scheduleMarkRead
+  ]);
 
   const title = chat
     ? chat.chat_type === "private"
@@ -368,41 +488,83 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
     target.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
+  const mentionCandidates = useMemo(() => {
+    if (!chat || !mentionState) return [];
+    const q = mentionState.query.toLowerCase();
+    return chat.participants
+      .filter((p) => p.user?.id !== user?.id)
+      .filter((p) => {
+        const un = (p.user.username || p.user.email.split("@")[0] || "").toLowerCase();
+        return !q || un.includes(q);
+      });
+  }, [chat, mentionState, user?.id]);
+
+  useEffect(() => {
+    setMentionHighlight(0);
+  }, [mentionState?.start, mentionState?.query]);
+
+  const applyMention = (participant: ChatParticipant) => {
+    const ta = textAreaRef.current;
+    if (!mentionState) return;
+    const cursor = ta?.selectionStart ?? text.length;
+    const uname =
+      participant.user.username || participant.user.email.split("@")[0] || "user";
+    const insert = `@${uname} `;
+    const newText = text.slice(0, mentionState.start) + insert + text.slice(cursor);
+    setText(newText);
+    setMentionState(null);
+    requestAnimationFrame(() => {
+      if (!textAreaRef.current) return;
+      const pos = mentionState.start + insert.length;
+      textAreaRef.current.focus();
+      textAreaRef.current.setSelectionRange(pos, pos);
+    });
+  };
+
   return (
-    <section className="flex flex-col flex-1">
-      <div className="px-4 py-3 border-b border-slate-800 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold">{title}</p>
+    <section className="flex flex-col flex-1 min-h-0 min-w-0">
+      <div className="px-3 sm:px-4 py-2.5 sm:py-3 border-b border-slate-800 flex flex-col gap-2.5 xl:grid xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_auto] xl:items-center xl:gap-x-3 xl:gap-y-2">
+        {/* Слева: название чата + число участников; в личном чате на очень широком экране — на всю ширину строки */}
+        <div
+          className={`min-w-0 order-1 xl:justify-self-start xl:text-left ${
+            chat?.chat_type !== "group" ? "xl:col-span-3" : ""
+          }`}
+        >
+          <p className="text-sm font-semibold break-words [overflow-wrap:anywhere]">{title}</p>
           {chat?.chat_type === "group" && (
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-slate-400 mt-0.5">
               Участники: {chat.participants.length}
             </p>
           )}
         </div>
+        {/* По центру: проект; трёхколоночная сетка только с xl (1280px), иначе колонки на ~1028px накладываются */}
         {chat?.chat_type === "group" && chat.project_details?.name ? (
-          <button
-            type="button"
-            className="justify-self-center text-xs px-3 py-1.5 rounded-xl border border-slate-700 text-slate-200 hover:bg-slate-800 max-w-[260px] truncate"
-            onClick={() => setShowProjectInfo(true)}
-            title={chat.project_details.name}
-          >
-            {chat.project_details.name}
-          </button>
-        ) : (
-          <div />
-        )}
-        {chat?.chat_type === "group" && (
-          <div className="flex items-center gap-2 justify-self-end">
+          <div className="order-2 min-w-0 flex justify-start xl:justify-center xl:px-2">
             <button
               type="button"
-              className="text-xs px-3 py-1.5 rounded-xl border border-slate-700 text-slate-200 hover:bg-slate-800"
+              className="text-xs px-3 py-1.5 rounded-xl border border-slate-700 text-slate-200 hover:bg-slate-800 max-w-full truncate text-left xl:max-w-[min(100%,28rem)] xl:text-center"
+              onClick={() => setShowProjectInfo(true)}
+              title={chat.project_details.name}
+            >
+              {chat.project_details.name}
+            </button>
+          </div>
+        ) : (
+          <div className="order-2 hidden min-h-0 min-w-0 xl:block" aria-hidden />
+        )}
+        {/* Справа: кнопки */}
+        {chat?.chat_type === "group" && (
+          <div className="order-3 flex flex-wrap items-center gap-2 justify-start sm:justify-end xl:flex-nowrap xl:justify-self-end xl:justify-end w-full xl:w-auto min-w-0">
+            <button
+              type="button"
+              className="text-xs px-3 py-1.5 rounded-xl border border-slate-700 text-slate-200 hover:bg-slate-800 shrink-0"
               onClick={onOpenParticipants}
             >
               Участники
             </button>
             <button
               type="button"
-              className="text-xs px-3 py-1.5 rounded-xl bg-primary hover:bg-primaryDark text-white"
+              className="text-xs px-3 py-1.5 rounded-xl bg-primary hover:bg-primaryDark text-white shrink-0 text-center disabled:opacity-50"
               onClick={onOpenAddParticipants}
               disabled={!canManageParticipants}
             >
@@ -436,12 +598,13 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
       )}
       <div
         ref={messagesAreaRef}
+        onScroll={updateScrollMetrics}
         className="flex-1 overflow-y-auto px-4 py-3 space-y-2 scrollbar-thin bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950"
       >
         {!chat && (
-          <div className="h-full flex items-center justify-center">
+          <div className="h-full flex items-center justify-center px-4 text-center">
             <p className="text-sm text-slate-500">
-              Выберите чат слева, чтобы начать общение.
+              Выберите чат в списке (на телефоне — кнопка «Чаты»), чтобы начать общение.
             </p>
           </div>
         )}
@@ -462,6 +625,7 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
             return (
               <div
                 key={m.id}
+                data-message-id={m.id}
                 ref={(el) => {
                   messageRefs.current[m.id] = el;
                 }}
@@ -566,12 +730,35 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
           </div>
         )}
       </div>
+      <div className="relative shrink-0">
+        {chat && showScrollDown && (
+          <button
+            type="button"
+            className="absolute z-30 right-3 sm:right-4 bottom-full mb-2 h-10 w-10 rounded-full border border-slate-500/70 bg-slate-900/95 text-slate-100 shadow-xl flex items-center justify-center hover:bg-slate-800 backdrop-blur-sm pointer-events-auto"
+            onClick={scrollMessagesToBottom}
+            aria-label="Прокрутить к последним сообщениям"
+            title="Вниз"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-5 w-5"
+            >
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+        )}
       <form
         onSubmit={handleSubmit}
-        className="border-t border-slate-800 px-3 py-2 flex items-center gap-2 bg-slate-950/80"
+        className="border-t border-slate-800 px-3 py-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end bg-slate-950/80"
       >
         {replyTo && (
-          <div className="mr-2 max-w-[40%] rounded-xl bg-slate-900/90 border border-slate-700 px-3 py-1.5 text-[11px] text-slate-200 flex items-start gap-2">
+          <div className="w-full sm:w-auto sm:max-w-[40%] sm:mr-2 rounded-xl bg-slate-900/90 border border-slate-700 px-3 py-1.5 text-[11px] text-slate-200 flex items-start gap-2 order-first">
             <div className="h-full w-1 rounded-full bg-primary" />
             <div className="flex-1">
               <div className="flex items-center justify-between gap-2">
@@ -592,32 +779,93 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
             </div>
           </div>
         )}
-        <textarea
-          ref={textAreaRef}
-          placeholder={chat ? "Напишите сообщение..." : "Выберите чат сверху"}
-          className="flex-1 rounded-xl bg-slate-900/80 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60 resize-none min-h-10 max-h-32 overflow-y-hidden whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
-          disabled={!chat}
-          value={text}
-          rows={1}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              if (chat && text.trim()) {
-                onSend(text.trim());
-                setText("");
+        <div className="relative w-full min-w-0 flex-1 sm:flex-[1_1_0] flex flex-col">
+          {mentionState && mentionCandidates.length > 0 && (
+            <div className="absolute bottom-full left-0 right-0 mb-1 z-30 max-h-40 overflow-y-auto scrollbar-thin rounded-xl border border-slate-700 bg-slate-900 shadow-lg text-xs">
+              {mentionCandidates.map((p, idx) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  className={`w-full text-left px-3 py-2 hover:bg-slate-800 ${
+                    idx === mentionHighlight ? "bg-slate-800/90" : ""
+                  }`}
+                  onMouseDown={(ev) => ev.preventDefault()}
+                  onClick={() => applyMention(p)}
+                >
+                  <span className="font-medium text-slate-200">
+                    @{p.user.username || p.user.email.split("@")[0]}
+                  </span>
+                  <span className="text-slate-500 ml-2">{p.user.display_name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <textarea
+            ref={textAreaRef}
+            placeholder={chat ? "Напишите сообщение…" : "Выберите чат"}
+            title={chat ? "Упоминание: @никнейм участника" : undefined}
+            className="w-full rounded-xl bg-slate-900/80 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60 resize-none min-h-10 max-h-32 overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] placeholder:text-slate-500"
+            disabled={!chat}
+            value={text}
+            rows={1}
+            onChange={(e) => {
+              const val = e.target.value;
+              setText(val);
+              const cursor = e.target.selectionStart ?? val.length;
+              const before = val.slice(0, cursor);
+              const m = before.match(/@([\w.]*)$/);
+              if (m && chat) {
+                setMentionState({ start: cursor - m[0].length, query: m[1] });
+              } else {
+                setMentionState(null);
               }
-            }
-          }}
-        />
+            }}
+            onKeyDown={(e) => {
+              if (mentionState && mentionCandidates.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setMentionHighlight((h) =>
+                    Math.min(h + 1, mentionCandidates.length - 1)
+                  );
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setMentionHighlight((h) => Math.max(h - 1, 0));
+                  return;
+                }
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  const pick = mentionCandidates[mentionHighlight];
+                  if (pick) applyMention(pick);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setMentionState(null);
+                  return;
+                }
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (chat && text.trim()) {
+                  onSend(text.trim());
+                  setText("");
+                  setMentionState(null);
+                }
+              }
+            }}
+          />
+        </div>
         <button
           type="submit"
           disabled={!chat || !text.trim()}
-          className="h-10 w-10 rounded-full bg-primary flex items-center justify-center text-sm font-semibold disabled:opacity-50"
+          className="h-10 w-10 shrink-0 self-end rounded-full bg-primary flex items-center justify-center text-sm font-semibold disabled:opacity-50"
         >
           ➤
         </button>
       </form>
+      </div>
     </section>
   );
 };
@@ -654,6 +902,7 @@ const ProfileSidebar: React.FC<{
   mobile = false
 }) => {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   return (
     <aside
       className={
@@ -666,14 +915,31 @@ const ProfileSidebar: React.FC<{
         <p className="text-xs uppercase tracking-[0.16em] text-slate-500 mb-2">
           Профиль
         </p>
-        <div className="flex items-center gap-3">
-          <div className="h-11 w-11 rounded-2xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-lg font-semibold">
+        <div className="flex items-start gap-3">
+          <button
+            type="button"
+            onClick={() => navigate("/app/settings")}
+            className="h-11 w-11 shrink-0 rounded-2xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-lg font-semibold hover:opacity-90"
+            title="Настройки профиля"
+          >
             {user?.display_name?.[0] ?? "U"}
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium truncate">{user?.display_name}</p>
+            <p className="text-xs text-slate-500 truncate">
+              @{user?.username ?? user?.email?.split("@")[0] ?? "user"}
+            </p>
+            <p className="text-xs text-slate-400 truncate">{user?.email}</p>
           </div>
-          <div>
-            <p className="text-sm font-medium">{user?.display_name}</p>
-            <p className="text-xs text-slate-400">{user?.email}</p>
-          </div>
+          <button
+            type="button"
+            onClick={() => navigate("/app/settings")}
+            className="shrink-0 h-9 w-9 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 flex items-center justify-center"
+            title="Настройки"
+            aria-label="Настройки профиля"
+          >
+            <span className="text-lg leading-none">⚙</span>
+          </button>
         </div>
       </div>
       <div className="flex-1 px-4 py-4 space-y-4 text-xs text-slate-400">
@@ -821,17 +1087,17 @@ const KanbanModal: React.FC<{
     title: string,
     nextKey?: keyof KanbanBoardState
   ) => (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 min-h-[240px]">
+    <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 min-h-[200px]">
       <p className="text-xs uppercase tracking-[0.14em] text-slate-400 mb-2">{title}</p>
       <div className="space-y-2">
         {board[key].map((c) => (
-          <div key={c.id} className="rounded-lg bg-slate-800 px-2 py-1.5 text-xs">
-            <p className="break-words">{c.text}</p>
-            <div className="mt-2 flex gap-1">
+          <div key={c.id} className="rounded-lg bg-slate-800 px-2 py-2 text-xs">
+            <p className="break-words [overflow-wrap:anywhere]">{c.text}</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
               {nextKey && (
                 <button
                   type="button"
-                  className="rounded-md border border-slate-600 px-2 py-0.5 text-[10px]"
+                  className="rounded-md border border-slate-600 px-2 py-1 text-[11px] hover:bg-slate-700/80"
                   onClick={() => move(key, nextKey, c.id)}
                 >
                   Вперёд
@@ -839,7 +1105,7 @@ const KanbanModal: React.FC<{
               )}
               <button
                 type="button"
-                className="rounded-md border border-red-700/60 px-2 py-0.5 text-[10px] text-red-300"
+                className="rounded-md border border-red-700/60 px-2 py-1 text-[11px] text-red-300 hover:bg-red-950/50"
                 onClick={() => remove(key, c.id)}
               >
                 Удалить
@@ -852,37 +1118,41 @@ const KanbanModal: React.FC<{
   );
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 px-4">
-      <div className="glass-panel w-full max-w-5xl p-6 space-y-4 max-h-[88vh] overflow-auto">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Канбан: {chat.name || `Чат ${chat.id}`}</h2>
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 px-3 sm:px-4 py-4">
+      <div className="glass-panel w-full max-w-5xl max-h-[min(92vh,900px)] flex flex-col min-h-0 p-4 sm:p-6">
+        <div className="flex items-center justify-between gap-2 shrink-0">
+          <h2 className="text-lg font-semibold truncate min-w-0">
+            Канбан: {chat.name || `Чат ${chat.id}`}
+          </h2>
           <button
             type="button"
-            className="text-slate-400 hover:text-slate-100"
+            className="text-slate-400 hover:text-slate-100 shrink-0"
             onClick={onClose}
           >
             ✕
           </button>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2 shrink-0 mt-3">
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder="Новая задача..."
-            className="flex-1 rounded-xl bg-slate-900/70 border border-slate-700 px-3 py-2 text-sm"
+            className="flex-1 min-w-0 rounded-xl bg-slate-900/70 border border-slate-700 px-3 py-2 text-sm"
           />
           <button
             type="button"
-            className="rounded-xl bg-primary hover:bg-primaryDark px-3 py-2 text-sm"
+            className="rounded-xl bg-primary hover:bg-primaryDark px-3 py-2 text-sm shrink-0"
             onClick={addCard}
           >
             Добавить
           </button>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {col("todo", "К выполнению", "inProgress")}
-          {col("inProgress", "В работе", "done")}
-          {col("done", "Готово")}
+        <div className="flex-1 min-h-0 mt-4 overflow-y-auto overflow-x-auto scrollbar-thin [scrollbar-color:rgba(148,163,184,0.45)_rgba(15,23,42,0.6)]">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 min-w-0 pb-1">
+            {col("todo", "К выполнению", "inProgress")}
+            {col("inProgress", "В работе", "done")}
+            {col("done", "Готово")}
+          </div>
         </div>
       </div>
     </div>
@@ -1118,7 +1388,7 @@ const RoleRow: React.FC<{
 };
 
 const MessengerShell: React.FC = () => {
-  const { accessToken, user } = useAuth();
+  const { accessToken, user, refreshProfile } = useAuth();
   const navigate = useNavigate();
   const [chats, setChats] = useState<Chat[]>([]);
   const [currentChatId, setCurrentChatId] = useState<number | null>(null);
@@ -1199,6 +1469,23 @@ const MessengerShell: React.FC = () => {
     setChats(resp.data);
   }, [accessToken]);
 
+  const markReadUpTo = useCallback(
+    async (messageId: number) => {
+      if (!accessToken || !currentChatId) return;
+      try {
+        await axios.post(
+          `/api/chats/chats/${currentChatId}/mark_read/`,
+          { message_id: messageId },
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        await fetchChats();
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    [accessToken, currentChatId, fetchChats]
+  );
+
   // Fetch chats once
   useEffect(() => {
     void fetchChats().catch(console.error);
@@ -1264,7 +1551,11 @@ const MessengerShell: React.FC = () => {
           full_name?: string;
           display_name?: string;
           reply_to_data?: Message["reply_to_data"];
+          data?: KanbanBoardState;
         };
+        if (data.type === "kanban_board_updated" && data.data) {
+          setKanbanBoard(data.data);
+        }
         if (data.type === "new_message" && data.text && data.message_id) {
           const incoming: Message = {
             id: data.message_id ?? 0,
@@ -1285,7 +1576,14 @@ const MessengerShell: React.FC = () => {
                 new Date(b.created_at).getTime()
             )
           );
-          void fetchChats().catch(console.error);
+          void axios
+            .post(
+              `/api/chats/chats/${currentChatId}/mark_read/`,
+              { message_id: incoming.id },
+              { headers: { Authorization: `Bearer ${accessToken}` } }
+            )
+            .then(() => fetchChats())
+            .catch(console.error);
         }
         if (data.type === "message_deleted" && data.message_id) {
           setMessages((prev) => prev.filter((m) => m.id !== data.message_id));
@@ -1298,7 +1596,7 @@ const MessengerShell: React.FC = () => {
     return () => {
       socket.close();
     };
-  }, [accessToken, currentChatId, fetchChats]);
+  }, [accessToken, currentChatId, fetchChats, setKanbanBoard]);
 
   // Personal notifications for real-time chat list updates
   useEffect(() => {
@@ -1313,21 +1611,68 @@ const MessengerShell: React.FC = () => {
         const data = JSON.parse(event.data as string) as {
           type: string;
           chat_id?: number;
+          kanban_data?: KanbanBoardState;
+          user?: {
+            id: number;
+            email: string;
+            username?: string;
+            first_name?: string;
+            last_name?: string;
+            full_name: string;
+            display_name: string;
+          };
         };
+        if (data.type === "user_profile_updated_notification" && data.user) {
+          const u = data.user;
+          if (u.id === user?.id) {
+            void refreshProfile();
+          }
+          void fetchChats().catch(console.error);
+          setMessages((prev) =>
+            prev.map((m) => {
+              const next = { ...m };
+              if (m.sender.id === u.id) {
+                next.sender = {
+                  ...m.sender,
+                  full_name: u.full_name,
+                  display_name: u.display_name
+                };
+              }
+              if (m.reply_to_data?.sender?.id === u.id) {
+                next.reply_to_data = {
+                  ...m.reply_to_data,
+                  sender: {
+                    ...m.reply_to_data.sender,
+                    full_name: u.full_name,
+                    display_name: u.display_name
+                  }
+                };
+              }
+              return next;
+            })
+          );
+          return;
+        }
         if (
           data.type === "new_message_notification" ||
           data.type === "chat_created_notification" ||
           data.type === "chat_participants_updated_notification" ||
-          data.type === "chat_kanban_updated_notification"
+          data.type === "chat_kanban_updated_notification" ||
+          data.type === "chat_unread_updated_notification" ||
+          data.type === "chat_mention_notification"
         ) {
           void fetchChats().catch(console.error);
           if (data.type === "chat_kanban_updated_notification" && currentChatId && data.chat_id === currentChatId) {
-            void axios
-              .get<{ data: KanbanBoardState }>(`/api/chats/chats/${currentChatId}/kanban/`, {
-                headers: { Authorization: `Bearer ${accessToken}` }
-              })
-              .then((resp) => setKanbanBoard(resp.data.data))
-              .catch(() => setKanbanBoard(null));
+            if (data.kanban_data && typeof data.kanban_data === "object") {
+              setKanbanBoard(data.kanban_data);
+            } else {
+              void axios
+                .get<{ data: KanbanBoardState }>(`/api/chats/chats/${currentChatId}/kanban/`, {
+                  headers: { Authorization: `Bearer ${accessToken}` }
+                })
+                .then((resp) => setKanbanBoard(resp.data.data))
+                .catch(() => setKanbanBoard(null));
+            }
           }
           if (
             data.type === "new_message_notification" &&
@@ -1371,7 +1716,7 @@ const MessengerShell: React.FC = () => {
     };
 
     return () => socket.close();
-  }, [accessToken, currentChatId, fetchChats]);
+  }, [accessToken, currentChatId, fetchChats, user?.id, refreshProfile]);
 
   // Search users by email to start private chat
   useEffect(() => {
@@ -1615,11 +1960,11 @@ const MessengerShell: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50 flex flex-col">
-      <header className="md:hidden px-3 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
-        <p className="font-semibold">Teamon</p>
-        <div className="flex items-center gap-2">
+      <header className="lg:hidden px-3 py-3 border-b border-slate-800 flex items-center justify-between gap-2 max-[325px]:flex-col max-[325px]:items-stretch">
+        <p className="font-semibold shrink-0">Teamon</p>
+        <div className="flex items-center gap-2 min-w-0 max-[325px]:flex-col max-[325px]:items-stretch max-[325px]:w-full">
           <button
-            className="text-xs px-3 py-1.5 rounded-full border border-slate-700"
+            className="text-xs px-3 py-1.5 rounded-full border border-slate-700 max-[325px]:w-full max-[325px]:text-center"
             onClick={() => {
               setShowMobileManage(false);
               setShowMobileChats((v) => !v);
@@ -1628,7 +1973,7 @@ const MessengerShell: React.FC = () => {
             Чаты
           </button>
           <button
-            className="text-xs px-3 py-1.5 rounded-full border border-slate-700"
+            className="text-xs px-3 py-1.5 rounded-full border border-slate-700 max-[325px]:w-full max-[325px]:text-center"
             onClick={() => {
               setShowMobileChats(false);
               setShowMobileManage((v) => !v);
@@ -1637,14 +1982,24 @@ const MessengerShell: React.FC = () => {
             Управление
           </button>
           <button
-            className="text-xs px-3 py-1.5 rounded-full border border-slate-700"
+            className="text-xs px-3 py-1.5 rounded-full border border-slate-700 max-[325px]:w-full max-[325px]:text-center"
+            onClick={() => {
+              setShowMobileChats(false);
+              setShowMobileManage(false);
+              navigate("/app/settings");
+            }}
+          >
+            Настройки
+          </button>
+          <button
+            className="text-xs px-3 py-1.5 rounded-full border border-slate-700 max-[325px]:w-full max-[325px]:text-center"
             onClick={() => navigate("/auth/login")}
           >
             Сменить аккаунт
           </button>
         </div>
       </header>
-      <main className="flex-1 flex flex-col md:flex-row max-h-[calc(100vh-3.25rem)] md:max-h-screen">
+      <main className="flex-1 flex flex-col lg:flex-row max-h-[calc(100vh-3.25rem)] lg:max-h-screen min-h-0">
         <ChatsSidebar
           chats={visibleChats}
           currentUserId={user?.id}
@@ -1707,6 +2062,9 @@ const MessengerShell: React.FC = () => {
             if (canManageParticipants) setShowAddParticipants(true);
           }}
           canManageParticipants={canManageParticipants}
+          onMarkReadUpTo={(id) => {
+            void markReadUpTo(id);
+          }}
         />
         <ProfileSidebar
           currentChat={currentChat}
@@ -1728,7 +2086,7 @@ const MessengerShell: React.FC = () => {
         />
       </main>
       {showMobileChats && (
-        <div className="fixed inset-0 z-50 md:hidden bg-slate-950 border-t border-slate-800 overflow-y-auto">
+        <div className="fixed inset-0 z-50 lg:hidden bg-slate-950 border-t border-slate-800 overflow-y-auto">
           <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
             <p className="text-sm font-semibold">Чаты и поиск</p>
             <button
@@ -1793,7 +2151,7 @@ const MessengerShell: React.FC = () => {
         </div>
       )}
       {showMobileManage && (
-        <div className="fixed inset-0 z-50 md:hidden bg-slate-950 border-t border-slate-800 overflow-y-auto">
+        <div className="fixed inset-0 z-50 lg:hidden bg-slate-950 border-t border-slate-800 overflow-y-auto">
           <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
             <p className="text-sm font-semibold">Управление</p>
             <button
@@ -2391,6 +2749,7 @@ const MessengerLayout: React.FC = () => {
   return (
     <Routes>
       <Route path="chats" element={<MessengerShell />} />
+      <Route path="settings" element={<SettingsPage />} />
       <Route path="*" element={<Navigate to="chats" replace />} />
     </Routes>
   );

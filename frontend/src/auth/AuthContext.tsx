@@ -1,10 +1,12 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import axios from "axios";
 
 type UserProfile = {
   id: number;
   email: string;
   username?: string;
+  first_name?: string;
+  last_name?: string;
   full_name: string;
   display_name: string;
 };
@@ -13,6 +15,7 @@ type AuthContextValue = {
   isAuthenticated: boolean;
   accessToken: string | null;
   user: UserProfile | null;
+  refreshProfile: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   register: (
     email: string,
@@ -68,6 +71,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setUser(response.data);
   };
 
+  const refreshProfile = useCallback(async () => {
+    if (!accessToken) return;
+    const response = await axios.get<UserProfile>("/api/auth/profile", {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    setUser(response.data);
+  }, [accessToken]);
+
   const login = async (email: string, password: string) => {
     const response = await axios.post("/api/auth/login/", { email, password });
     const token = response.data.access as string;
@@ -105,6 +116,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     isAuthenticated: Boolean(accessToken && user),
     accessToken,
     user,
+    refreshProfile,
     login,
     register,
     logout
