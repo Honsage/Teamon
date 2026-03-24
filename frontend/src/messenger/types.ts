@@ -1,8 +1,12 @@
 export type ChatParticipant = {
   id: number;
+  is_admin?: boolean;
+  role_title?: string;
   user: {
     id: number;
     email: string;
+    first_name?: string;
+    last_name?: string;
     full_name: string;
     display_name: string;
   };
@@ -12,7 +16,7 @@ export type Chat = {
   id: number;
   chat_type: "private" | "group";
   name: string | null;
-  project_details: { name: string } | null;
+  project_details: { name: string; description?: string } | null;
   last_message: {
     text: string;
     created_at: string;

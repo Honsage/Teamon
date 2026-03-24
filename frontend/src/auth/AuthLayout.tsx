@@ -2,6 +2,34 @@ import React from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 
+const normalizeErrorMessage = (raw: string): string =>
+  raw
+    .replaceAll("Username", "Никнейм")
+    .replaceAll("username", "никнейм")
+    .replaceAll("This field", "Это поле")
+    .replaceAll("already exists", "уже существует")
+    .replaceAll("already taken", "уже занят")
+    .replaceAll("This value", "Это значение");
+
+const extractApiErrorMessage = (err: unknown, fallback: string): string => {
+  const responseData = (err as { response?: { data?: unknown } })?.response?.data;
+  if (typeof responseData === "string" && responseData.trim()) {
+    return normalizeErrorMessage(responseData);
+  }
+  if (responseData && typeof responseData === "object") {
+    const data = responseData as Record<string, unknown>;
+    if (typeof data.detail === "string") return normalizeErrorMessage(data.detail);
+    if (typeof data.error === "string") return normalizeErrorMessage(data.error);
+    for (const value of Object.values(data)) {
+      if (typeof value === "string" && value.trim()) return normalizeErrorMessage(value);
+      if (Array.isArray(value) && typeof value[0] === "string") {
+        return normalizeErrorMessage(value[0]);
+      }
+    }
+  }
+  return fallback;
+};
+
 const AuthCard: React.FC<{ children: React.ReactNode; title: string }> = ({
   children,
   title
@@ -35,7 +63,7 @@ const LoginPage: React.FC = () => {
       navigate("/app/chats");
     } catch (err) {
       console.error(err);
-      setError("Не удалось войти. Проверьте данные.");
+      setError(extractApiErrorMessage(err, "Не удалось войти."));
     } finally {
       setLoading(false);
     }
@@ -169,7 +197,7 @@ const RegisterPage: React.FC = () => {
       navigate("/app/chats");
     } catch (err) {
       console.error(err);
-      setError("Не удалось зарегистрироваться. Проверьте поля.");
+      setError(extractApiErrorMessage(err, "Не удалось зарегистрироваться."));
     } finally {
       setLoading(false);
     }
@@ -186,7 +214,6 @@ const RegisterPage: React.FC = () => {
             <input
               id="first_name"
               type="text"
-              required
               className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
               value={firstName}
               onChange={(e) => setFirstName(e.target.value)}
@@ -199,7 +226,6 @@ const RegisterPage: React.FC = () => {
             <input
               id="last_name"
               type="text"
-              required
               className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
               value={lastName}
               onChange={(e) => setLastName(e.target.value)}
