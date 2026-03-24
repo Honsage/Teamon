@@ -361,6 +361,10 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
   const markReadFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const markReadPendingMax = useRef(0);
   const [showScrollDown, setShowScrollDown] = useState(false);
+  const pendingScrollAfterOwnSendRef = useRef(false);
+  const messageCountAtSendRef = useRef(0);
+  const nearBottomRef = useRef(true);
+  const prevMessageListLengthRef = useRef(0);
 
   const flushMarkRead = useCallback(() => {
     const id = markReadPendingMax.current;
@@ -383,6 +387,8 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
     const el = messagesAreaRef.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottomPx = 96;
+    nearBottomRef.current = distance <= nearBottomPx;
     setShowScrollDown(distance > 72);
     const maxId = getMaxVisibleMessageId(el);
     if (maxId > 0) scheduleMarkRead(maxId);
@@ -392,10 +398,18 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
     const el = messagesAreaRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, []);
+    nearBottomRef.current = true;
+    requestAnimationFrame(() => {
+      messagesAreaRef.current && updateScrollMetrics();
+    });
+  }, [updateScrollMetrics]);
 
   useEffect(() => {
     markReadPendingMax.current = 0;
+    pendingScrollAfterOwnSendRef.current = false;
+    messageCountAtSendRef.current = 0;
+    nearBottomRef.current = true;
+    prevMessageListLengthRef.current = 0;
     if (markReadFlushRef.current) {
       clearTimeout(markReadFlushRef.current);
       markReadFlushRef.current = null;
@@ -425,16 +439,38 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
   }, [text]);
 
   useEffect(() => {
+    if (!pendingScrollAfterOwnSendRef.current) return;
     if (!messagesAreaRef.current || messages.length === 0) return;
+    if (messages.length <= messageCountAtSendRef.current) return;
     const last = messages[messages.length - 1];
-    if (last?.sender?.id === user?.id) {
-      messagesAreaRef.current.scrollTo({
-        top: messagesAreaRef.current.scrollHeight,
-        behavior: "smooth"
-      });
-      requestAnimationFrame(() => updateScrollMetrics());
-    }
+    if (last?.sender?.id !== user?.id) return;
+    pendingScrollAfterOwnSendRef.current = false;
+    messageCountAtSendRef.current = 0;
+    messagesAreaRef.current.scrollTo({
+      top: messagesAreaRef.current.scrollHeight,
+      behavior: "smooth"
+    });
+    requestAnimationFrame(() => updateScrollMetrics());
   }, [messages, user?.id, updateScrollMetrics]);
+
+  useEffect(() => {
+    if (!chat) return;
+    const prevLen = prevMessageListLengthRef.current;
+    if (messages.length < prevLen) {
+      prevMessageListLengthRef.current = messages.length;
+      return;
+    }
+    if (messages.length === prevLen) return;
+    prevMessageListLengthRef.current = messages.length;
+    if (!nearBottomRef.current) return;
+    if (!messagesAreaRef.current) return;
+    requestAnimationFrame(() => {
+      const el = messagesAreaRef.current;
+      if (!el) return;
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      requestAnimationFrame(() => updateScrollMetrics());
+    });
+  }, [messages, chat, updateScrollMetrics]);
 
   useEffect(() => {
     if (!chat || messages.length === 0) {
@@ -477,6 +513,8 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!text.trim()) return;
+    messageCountAtSendRef.current = messages.length;
+    pendingScrollAfterOwnSendRef.current = true;
     onSend(text.trim());
     setText("");
   };
@@ -849,6 +887,8 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 if (chat && text.trim()) {
+                  messageCountAtSendRef.current = messages.length;
+                  pendingScrollAfterOwnSendRef.current = true;
                   onSend(text.trim());
                   setText("");
                   setMentionState(null);
