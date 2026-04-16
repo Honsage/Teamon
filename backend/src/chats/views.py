@@ -21,6 +21,25 @@ from projects.models import Project
 User = get_user_model()
 
 
+def attachment_dicts_for_ws(message, request):
+    """Сериализация вложений для событий channels (абсолютные URL файлов)."""
+    items = []
+    for a in message.attachments.all():
+        url = a.file.url
+        if request:
+            url = request.build_absolute_uri(url)
+        items.append(
+            {
+                "id": a.id,
+                "file": url,
+                "filename": a.filename,
+                "file_size": a.file_size,
+                "content_type": a.content_type,
+            }
+        )
+    return items
+
+
 def apply_mentions_to_participants(chat, message, sender):
     """Помечает упоминания @username (никнейм или локальная часть email) для участников чата."""
     try:
@@ -59,6 +78,51 @@ def notify_chat_unread_updated_event(chat):
             )
     except Exception as e:
         print(f"Error notify_chat_unread_updated_event: {e}")
+
+
+def _kanban_cards_by_id(data):
+    """Собирает карточки канбана в словарь id -> карточка."""
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for col in ("todo", "inProgress", "done"):
+        for card in data.get(col) or []:
+            if isinstance(card, dict) and card.get("id"):
+                out[card["id"]] = card
+    return out
+
+
+def _norm_assignee_id(card):
+    if not isinstance(card, dict):
+        return None
+    v = card.get("assignee_id")
+    if v in (None, "", 0, "0"):
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _kanban_assignee_changed(old_data, new_data):
+    old_m = _kanban_cards_by_id(old_data)
+    new_m = _kanban_cards_by_id(new_data)
+    for cid, nc in new_m.items():
+        oc = old_m.get(cid, {})
+        if _norm_assignee_id(oc) != _norm_assignee_id(nc):
+            return True
+    return False
+
+
+def _kanban_assignees_invalid_for_chat(chat, new_data):
+    user_ids = set(
+        ChatParticipant.objects.filter(chat=chat).values_list("user_id", flat=True)
+    )
+    for card in _kanban_cards_by_id(new_data).values():
+        aid = _norm_assignee_id(card)
+        if aid is not None and aid not in user_ids:
+            return True
+    return False
 
 
 class ChatViewSet(viewsets.ModelViewSet):
@@ -542,6 +606,21 @@ class ChatViewSet(viewsets.ModelViewSet):
 
         serializer = ChatKanbanBoardSerializer(board, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        new_data = serializer.validated_data.get("data")
+        old_data = board.data if isinstance(board.data, dict) else {}
+        if new_data is not None:
+            if _kanban_assignees_invalid_for_chat(chat, new_data):
+                return Response(
+                    {"error": "Исполнитель должен быть участником чата."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if _kanban_assignee_changed(old_data, new_data) and not self._is_group_admin(
+                chat, request.user
+            ):
+                return Response(
+                    {"error": "Только администратор может назначать исполнителей задач."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         serializer.save()
         self.notify_kanban_updated(chat)
         return Response(serializer.data)
@@ -688,6 +767,7 @@ class ChatViewSet(viewsets.ModelViewSet):
                     "type": "chat_message",
                     "message_id": message.id,
                     "text": message.text,
+                    "attachments": [],
                     "user_id": sender.id,
                     "email": sender.email,
                     "full_name": sender_full_name,
@@ -712,7 +792,7 @@ class MessageViewSet(viewsets.ModelViewSet):
                 return Message.objects.none()
             return Message.objects.filter(
                 chat__participants=self.request.user
-            ).select_related('sender', 'reply_to')
+            ).select_related('sender', 'reply_to').prefetch_related('attachments')
         
         # Проверяем доступ к чату
         if not ChatParticipant.objects.filter(
@@ -724,7 +804,7 @@ class MessageViewSet(viewsets.ModelViewSet):
         return Message.objects.filter(
             chat_id=chat_id,
             is_deleted=False
-        ).select_related('sender', 'reply_to')
+        ).select_related('sender', 'reply_to').prefetch_related('attachments')
 
     def perform_create(self, serializer):
         """Создание нового сообщения"""
@@ -738,6 +818,22 @@ class MessageViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("You don't have access to this chat")
         
         message = serializer.save(sender=self.request.user)
+
+        uploaded_list = list(self.request.FILES.getlist("file"))
+        if not uploaded_list:
+            single = self.request.FILES.get("file")
+            if single:
+                uploaded_list = [single]
+        for uploaded in uploaded_list:
+            safe_name = (getattr(uploaded, "name", None) or "file")[:255]
+            Attachment.objects.create(
+                message=message,
+                file=uploaded,
+                filename=safe_name,
+                file_size=getattr(uploaded, "size", 0) or 0,
+                content_type=getattr(uploaded, "content_type", None)
+                or "application/octet-stream",
+            )
         
         # Обновляем updated_at чата
         Chat.objects.filter(id=chat_id).update(updated_at=message.created_at)
@@ -767,6 +863,16 @@ class MessageViewSet(viewsets.ModelViewSet):
             sender_display_name = sender.email
 
         created_at = message.created_at.isoformat()
+        request = getattr(self, "request", None)
+        attachments_ws = attachment_dicts_for_ws(message, request)
+
+        preview = (message.text or "").strip()[:50]
+        if not preview:
+            first_att = message.attachments.first()
+            if first_att:
+                preview = f"📎 {(first_att.filename or 'файл')[:44]}"
+            else:
+                preview = "…"
 
         # Обновление открытого чата в реальном времени для всех его участников.
         async_to_sync(channel_layer.group_send)(
@@ -775,6 +881,7 @@ class MessageViewSet(viewsets.ModelViewSet):
                 "type": "chat_message",
                 "message_id": message.id,
                 "text": message.text,
+                "attachments": attachments_ws,
                 "user_id": sender.id,
                 "email": sender.email,
                 "full_name": sender_full_name,
@@ -815,7 +922,7 @@ class MessageViewSet(viewsets.ModelViewSet):
                     "sender_email": sender.email,
                     "sender_full_name": sender_full_name,
                     "sender_display_name": sender_display_name,
-                    "text_preview": message.text[:50],
+                    "text_preview": preview,
                     "created_at": created_at,
                 },
             )

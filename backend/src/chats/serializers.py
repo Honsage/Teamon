@@ -45,23 +45,51 @@ class ChatParticipantSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 class AttachmentSerializer(serializers.ModelSerializer):
+    file = serializers.SerializerMethodField()
+
     class Meta:
         model = Attachment
         fields = ['id', 'file', 'filename', 'file_size', 'content_type', 'uploaded_at']
+
+    def get_file(self, obj):
+        request = self.context.get('request')
+        url = obj.file.url
+        if request:
+            return request.build_absolute_uri(url)
+        return url
+
 
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
     attachments = AttachmentSerializer(many=True, read_only=True)
     reply_to_data = serializers.SerializerMethodField()
-    
+    text = serializers.CharField(required=False, allow_blank=True, default='')
+
     class Meta:
         model = Message
         fields = [
-            'id', 'chat', 'sender', 'text', 'created_at', 
+            'id', 'chat', 'sender', 'text', 'created_at',
             'updated_at', 'is_deleted', 'reply_to', 'reply_to_data',
             'attachments'
         ]
         read_only_fields = ['sender', 'created_at', 'updated_at', 'is_deleted']
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if not request or request.method != 'POST':
+            return attrs
+        text = (attrs.get('text') or '').strip()
+        uploaded = list(request.FILES.getlist("file"))
+        if not uploaded:
+            single = request.FILES.get("file")
+            if single:
+                uploaded = [single]
+        has_file = bool(uploaded)
+        if not text and not has_file:
+            raise serializers.ValidationError(
+                {'text': 'Укажите текст сообщения или прикрепите файл.'}
+            )
+        return attrs
     
     def get_reply_to_data(self, obj):
         if obj.reply_to:

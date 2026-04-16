@@ -133,6 +133,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'type': 'new_message',
             'message_id': event['message_id'],
             'text': event['text'],
+            'attachments': event.get('attachments') or [],
             'user_id': event['user_id'],
             'email': event['email'],
             'full_name': event['full_name'],
