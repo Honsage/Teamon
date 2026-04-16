@@ -28,6 +28,15 @@ export type Chat = {
   participants: ChatParticipant[];
 };
 
+export type MessageAttachment = {
+  id: number;
+  file: string;
+  filename: string;
+  file_size: number;
+  content_type: string;
+  uploaded_at?: string;
+};
+
 export type Message = {
   id: number;
   chat: number;
@@ -49,6 +58,7 @@ export type Message = {
     full_name: string;
     display_name: string;
   };
+  attachments?: MessageAttachment[];
 };
 
 export type UserProfileForSearch = {

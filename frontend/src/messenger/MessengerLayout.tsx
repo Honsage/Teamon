@@ -36,6 +36,15 @@ type Chat = {
   participants: ChatParticipant[];
 };
 
+type MessageAttachment = {
+  id: number;
+  file: string;
+  filename: string;
+  file_size: number;
+  content_type: string;
+  uploaded_at?: string;
+};
+
 type Message = {
   id: number;
   chat: number;
@@ -58,6 +67,7 @@ type Message = {
     full_name: string;
     display_name: string;
   };
+  attachments?: MessageAttachment[];
 };
 
 type UserProfileForSearch = {
@@ -315,11 +325,150 @@ const extractApiErrorMessage = (err: unknown, fallback: string): string => {
   return fallback;
 };
 
+const dlStorageKey = (attachmentId: number) => `teemon-dl-${attachmentId}`;
+
+const stablePendingFileKey = (file: File) =>
+  `${file.name}\0${file.size}\0${file.lastModified}`;
+
+const formatFileSize = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const truncateFilenameMiddle = (name: string, max = 40): string => {
+  if (name.length <= max) return name;
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot) : "";
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const budget = max - ext.length - 3;
+  if (budget < 10) return `${name.slice(0, max - 3)}…`;
+  const left = Math.ceil(budget / 2);
+  const right = Math.floor(budget / 2);
+  return `${base.slice(0, left)}…${base.slice(base.length - right)}${ext}`;
+};
+
+const formatMessageTime = (iso: string): string => {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+};
+
+const PaperclipIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.75"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden
+  >
+    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19A4 4 0 1 1 12 19.84l-8.61-8.61a2 2 0 0 1 2.83-2.83l7.07 7.07" />
+  </svg>
+);
+
+const ChatFileAttachmentRow: React.FC<{
+  attachment: MessageAttachment;
+  isMine: boolean;
+  showTime: boolean;
+  createdAt: string;
+  downloaded: boolean;
+  onMarkDownloaded: () => void;
+}> = ({ attachment, isMine, showTime, createdAt, downloaded, onMarkDownloaded }) => {
+  const circleClass = isMine
+    ? "bg-white/20 hover:bg-white/30 text-white"
+    : "bg-slate-600 hover:bg-slate-500 text-white";
+  const nameClass = isMine ? "text-white" : "text-slate-100";
+  const metaClass = isMine ? "text-indigo-100/85" : "text-slate-400";
+
+  const handleAction = async () => {
+    if (!downloaded) {
+      try {
+        const res = await fetch(attachment.file);
+        if (!res.ok) throw new Error("fetch failed");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = attachment.filename || "download";
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        try {
+          localStorage.setItem(dlStorageKey(attachment.id), "1");
+        } catch {
+          /* ignore */
+        }
+        onMarkDownloaded();
+      } catch {
+        try {
+          const a = document.createElement("a");
+          a.href = attachment.file;
+          a.download = attachment.filename || "download";
+          a.rel = "noopener";
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          try {
+            localStorage.setItem(dlStorageKey(attachment.id), "1");
+          } catch {
+            /* ignore */
+          }
+          onMarkDownloaded();
+        } catch {
+          /* ignore */
+        }
+      }
+      return;
+    }
+    window.open(attachment.file, "_blank", "noopener,noreferrer");
+  };
+
+  return (
+    <div className="flex gap-2.5 min-w-0 items-start">
+      <button
+        type="button"
+        onClick={() => void handleAction()}
+        title={downloaded ? "Открыть файл" : "Скачать файл"}
+        className={`shrink-0 h-11 w-11 rounded-full flex items-center justify-center transition ${circleClass}`}
+      >
+        {downloaded ? (
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+            <polyline points="13 2 13 9 20 9" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 5v14M5 12l7 7 7-7" />
+          </svg>
+        )}
+      </button>
+      <div className="min-w-0 flex-1 pt-0.5">
+        <p className={`text-[13px] font-medium leading-snug truncate ${nameClass}`} title={attachment.filename}>
+          {truncateFilenameMiddle(attachment.filename, 42)}
+        </p>
+        <div className={`flex items-end justify-between gap-2 mt-0.5 ${metaClass} text-[11px]`}>
+          <span>{formatFileSize(attachment.file_size)}</span>
+          {showTime ? <span className="shrink-0 tabular-nums">{formatMessageTime(createdAt)}</span> : null}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 type MessagesPaneProps = {
   chat: Chat | null;
   messages: Message[];
   replyTo: Message | null;
-  onSend: (text: string) => void;
+  onSend: (text: string, files?: File[]) => void;
   onReplySelect: (message: Message) => void;
   onClearReply: () => void;
   onDelete: (message: Message) => void;
@@ -344,6 +493,12 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
 }) => {
   const { user } = useAuth();
   const [text, setText] = useState("");
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [pendingFileDownloadedOnce, setPendingFileDownloadedOnce] = useState<
+    Record<string, boolean>
+  >({});
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [fileDownloaded, setFileDownloaded] = useState<Record<number, boolean>>({});
   const [mentionState, setMentionState] = useState<{ start: number; query: string } | null>(
     null
   );
@@ -410,11 +565,30 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
     messageCountAtSendRef.current = 0;
     nearBottomRef.current = true;
     prevMessageListLengthRef.current = 0;
+    setPendingFiles([]);
+    setPendingFileDownloadedOnce({});
+    if (fileInputRef.current) fileInputRef.current.value = "";
     if (markReadFlushRef.current) {
       clearTimeout(markReadFlushRef.current);
       markReadFlushRef.current = null;
     }
   }, [chat?.id]);
+
+  useEffect(() => {
+    const next: Record<number, boolean> = {};
+    messages.forEach((m) => {
+      m.attachments?.forEach((a) => {
+        try {
+          if (localStorage.getItem(dlStorageKey(a.id))) next[a.id] = true;
+        } catch {
+          /* ignore */
+        }
+      });
+    });
+    if (Object.keys(next).length > 0) {
+      setFileDownloaded((prev) => ({ ...prev, ...next }));
+    }
+  }, [messages]);
 
   useEffect(() => {
     const close = () => setContextMenu(null);
@@ -512,11 +686,45 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!text.trim()) return;
+    if (!chat || (!text.trim() && pendingFiles.length === 0)) return;
     messageCountAtSendRef.current = messages.length;
     pendingScrollAfterOwnSendRef.current = true;
-    onSend(text.trim());
+    onSend(text.trim(), pendingFiles.length ? pendingFiles : undefined);
     setText("");
+    setPendingFiles([]);
+    setPendingFileDownloadedOnce({});
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removePendingFile = (file: File) => {
+    const key = stablePendingFileKey(file);
+    setPendingFiles((prev) => prev.filter((f) => stablePendingFileKey(f) !== key));
+    setPendingFileDownloadedOnce((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const handlePendingChipClick = (file: File) => {
+    const key = stablePendingFileKey(file);
+    const alreadyDownloaded = pendingFileDownloadedOnce[key];
+    if (!alreadyDownloaded) {
+      const url = URL.createObjectURL(file);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.name || "download";
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 20_000);
+      setPendingFileDownloadedOnce((prev) => ({ ...prev, [key]: true }));
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    window.open(url, "_blank", "noopener,noreferrer");
+    setTimeout(() => URL.revokeObjectURL(url), 120_000);
   };
 
   const scrollToMessage = (messageId?: number | null) => {
@@ -727,9 +935,28 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
                       </span>
                     </button>
                   )}
-                  <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-                    {m.text}
-                  </p>
+                  {m.attachments && m.attachments.length > 0 && (
+                    <div className="mb-1 space-y-2 min-w-0">
+                      {m.attachments.map((att, attIdx) => (
+                        <ChatFileAttachmentRow
+                          key={att.id}
+                          attachment={att}
+                          isMine={isMine}
+                          showTime={attIdx === m.attachments!.length - 1}
+                          createdAt={m.created_at}
+                          downloaded={Boolean(fileDownloaded[att.id])}
+                          onMarkDownloaded={() =>
+                            setFileDownloaded((prev) => ({ ...prev, [att.id]: true }))
+                          }
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {Boolean(m.text?.trim()) && (
+                    <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                      {m.text}
+                    </p>
+                  )}
 
                 </div>
               </div>
@@ -793,12 +1020,12 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
         )}
       <form
         onSubmit={handleSubmit}
-        className="border-t border-slate-800 px-3 py-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end bg-slate-950/80"
+        className="border-t border-slate-800 px-3 py-2 flex flex-col gap-2 bg-slate-950/80"
       >
         {replyTo && (
-          <div className="w-full sm:w-auto sm:max-w-[40%] sm:mr-2 rounded-xl bg-slate-900/90 border border-slate-700 px-3 py-1.5 text-[11px] text-slate-200 flex items-start gap-2 order-first">
+          <div className="w-full max-w-full sm:max-w-[min(100%,28rem)] rounded-xl bg-slate-900/90 border border-slate-700 px-3 py-1.5 text-[11px] text-slate-200 flex items-start gap-2">
             <div className="h-full w-1 rounded-full bg-primary" />
-            <div className="flex-1">
+            <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-semibold">
                   {replyTo.sender?.display_name ??
@@ -813,11 +1040,43 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
                   ✕
                 </button>
               </div>
-              <p className="truncate max-w-[220px] sm:max-w-[320px]">{replyTo.text}</p>
+              <p className="truncate">{replyTo.text}</p>
             </div>
           </div>
         )}
-        <div className="relative w-full min-w-0 flex-1 sm:flex-[1_1_0] flex flex-col">
+        {pendingFiles.length > 0 && (
+          <div className="flex w-full min-w-0 flex-wrap justify-end gap-2">
+            {pendingFiles.map((file) => (
+              <div
+                key={stablePendingFileKey(file)}
+                className="inline-flex min-w-0 max-w-[33%] items-center gap-1 rounded-xl border border-slate-700/90 bg-slate-900/85 py-1 pl-2 pr-1 text-xs text-slate-200 shadow-sm"
+              >
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left text-xs text-slate-100 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 rounded-md px-0.5"
+                  title={
+                    pendingFileDownloadedOnce[stablePendingFileKey(file)]
+                      ? `${file.name} — нажмите, чтобы открыть`
+                      : `${file.name} — нажмите, чтобы скачать`
+                  }
+                  onClick={() => handlePendingChipClick(file)}
+                >
+                  {file.name}
+                </button>
+                <button
+                  type="button"
+                  className="shrink-0 flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                  onClick={() => removePendingFile(file)}
+                  aria-label="Убрать файл"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex w-full min-w-0 items-end gap-2">
+        <div className="relative flex-1 min-w-0 flex flex-col">
           {mentionState && mentionCandidates.length > 0 && (
             <div className="absolute bottom-full left-0 right-0 mb-1 z-30 max-h-40 overflow-y-auto scrollbar-thin rounded-xl border border-slate-700 bg-slate-900 shadow-lg text-xs">
               {mentionCandidates.map((p, idx) => (
@@ -886,24 +1145,54 @@ const MessagesPane: React.FC<MessagesPaneProps> = ({
               }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (chat && text.trim()) {
+                if (chat && (text.trim() || pendingFiles.length > 0)) {
                   messageCountAtSendRef.current = messages.length;
                   pendingScrollAfterOwnSendRef.current = true;
-                  onSend(text.trim());
+                  onSend(
+                    text.trim(),
+                    pendingFiles.length > 0 ? pendingFiles : undefined
+                  );
                   setText("");
+                  setPendingFiles([]);
+                  setPendingFileDownloadedOnce({});
+                  if (fileInputRef.current) fileInputRef.current.value = "";
                   setMentionState(null);
                 }
               }
             }}
           />
         </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const picked = Array.from(e.target.files || []);
+            if (picked.length > 0) {
+              setPendingFiles((prev) => [...prev, ...picked]);
+            }
+            e.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          disabled={!chat}
+          className="h-10 w-10 shrink-0 self-end rounded-full border border-slate-600/90 bg-slate-900/90 text-slate-400 hover:text-slate-200 hover:bg-slate-800/90 flex items-center justify-center transition disabled:opacity-50"
+          title="Прикрепить файл"
+          aria-label="Прикрепить файл"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <PaperclipIcon className="h-[1.15rem] w-[1.15rem]" />
+        </button>
         <button
           type="submit"
-          disabled={!chat || !text.trim()}
+          disabled={!chat || (!text.trim() && pendingFiles.length === 0)}
           className="h-10 w-10 shrink-0 self-end rounded-full bg-primary flex items-center justify-center text-sm font-semibold disabled:opacity-50"
         >
           ➤
         </button>
+        </div>
       </form>
       </div>
     </section>
@@ -1082,7 +1371,12 @@ const ProfileSidebar: React.FC<{
   );
 };
 
-type KanbanCard = { id: string; text: string };
+type KanbanCard = {
+  id: string;
+  text: string;
+  assignee_id?: number | null;
+  assignee_label?: string | null;
+};
 type KanbanBoardState = {
   todo: KanbanCard[];
   inProgress: KanbanCard[];
@@ -1091,19 +1385,59 @@ type KanbanBoardState = {
 
 const emptyBoard: KanbanBoardState = { todo: [], inProgress: [], done: [] };
 
+const participantNickname = (p: ChatParticipant): string => {
+  const u = p.user;
+  const un = (u.username || "").trim();
+  if (un) return un;
+  const local = (u.email || "").split("@")[0]?.trim();
+  if (local) return local;
+  const d = (u.display_name || u.full_name || "").trim();
+  if (d) return d;
+  return "user";
+};
+
+const cardAssigneeDisplay = (c: KanbanCard, participants: ChatParticipant[]): string => {
+  const aid = c.assignee_id;
+  if (aid != null && aid !== undefined && Number.isFinite(Number(aid))) {
+    const p = participants.find((x) => x.user?.id === Number(aid));
+    if (p) return participantNickname(p);
+  }
+  const cached = (c.assignee_label || "").trim();
+  if (cached) return cached;
+  return "";
+};
+
 const KanbanModal: React.FC<{
   chat: Chat;
   board: KanbanBoardState;
   onChange: (next: KanbanBoardState) => Promise<void>;
   onClose: () => void;
-}> = ({ chat, board, onChange, onClose }) => {
+  isKanbanAdmin: boolean;
+  participants: ChatParticipant[];
+}> = ({ chat, board, onChange, onClose, isKanbanAdmin, participants }) => {
   const [text, setText] = useState("");
+  const assigneeOptions = useMemo(
+    () =>
+      [...participants].sort((a, b) =>
+        participantNickname(a).localeCompare(participantNickname(b), "ru")
+      ),
+    [participants]
+  );
+
   const addCard = () => {
     const value = text.trim();
     if (!value) return;
     void onChange({
       ...board,
-      todo: [...board.todo, { id: `${Date.now()}_${Math.random()}`, text: value }]
+      todo: [
+        ...board.todo,
+        {
+          id: `${Date.now()}_${Math.random()}`,
+          text: value,
+          assignee_id: null,
+          assignee_label: null
+        }
+      ]
     });
     setText("");
   };
@@ -1122,37 +1456,96 @@ const KanbanModal: React.FC<{
     void onChange({ ...board, [from]: board[from].filter((c) => c.id !== id) });
   };
 
+  const setAssignee = (
+    column: keyof KanbanBoardState,
+    cardId: string,
+    userId: number | null
+  ) => {
+    const part =
+      userId == null ? null : participants.find((p) => p.user?.id === userId);
+    void onChange({
+      ...board,
+      [column]: board[column].map((card) =>
+        card.id === cardId
+          ? {
+              ...card,
+              assignee_id: userId === null ? null : userId,
+              assignee_label: part ? participantNickname(part) : null
+            }
+          : card
+      )
+    });
+  };
+
   const col = (
     key: keyof KanbanBoardState,
     title: string,
     nextKey?: keyof KanbanBoardState
   ) => (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 min-h-[200px]">
+    <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 min-h-[200px] min-w-0">
       <p className="text-xs uppercase tracking-[0.14em] text-slate-400 mb-2">{title}</p>
-      <div className="space-y-2">
-        {board[key].map((c) => (
-          <div key={c.id} className="rounded-lg bg-slate-800 px-2 py-2 text-xs">
-            <p className="break-words [overflow-wrap:anywhere]">{c.text}</p>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {nextKey && (
+      <div className="space-y-2 min-w-0">
+        {board[key].map((c) => {
+          const displayNick = cardAssigneeDisplay(c, participants);
+          const selectValue =
+            c.assignee_id != null && c.assignee_id !== undefined && Number.isFinite(Number(c.assignee_id))
+              ? String(c.assignee_id)
+              : "";
+          return (
+            <div key={c.id} className="rounded-lg bg-slate-800 px-2 py-2 text-xs min-w-0">
+              <p className="break-words [overflow-wrap:anywhere] text-slate-100">{c.text}</p>
+              {displayNick ? (
+                <div className="mt-1.5 flex min-w-0 items-baseline gap-1 text-[11px] text-slate-400">
+                  <span className="shrink-0 text-slate-500">Исп.:</span>
+                  <span
+                    className="min-w-0 truncate font-medium text-slate-200"
+                    title={`@${displayNick}`}
+                  >
+                    @{displayNick}
+                  </span>
+                </div>
+              ) : null}
+              {isKanbanAdmin ? (
+                <label className="mt-1.5 block min-w-0">
+                  <span className="sr-only">Исполнитель</span>
+                  <select
+                    className="w-full min-w-0 max-w-full rounded-lg border border-slate-600 bg-slate-900/90 py-1.5 pl-2 pr-2 text-[11px] text-slate-200 focus:outline-none focus:ring-1 focus:ring-primary"
+                    value={selectValue}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setAssignee(key, c.id, raw === "" ? null : Number(raw));
+                    }}
+                  >
+                    <option value="">Без исполнителя</option>
+                    {assigneeOptions.map((p) => (
+                      <option key={p.user.id} value={p.user.id}>
+                        @{participantNickname(p)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {nextKey && (
+                  <button
+                    type="button"
+                    className="rounded-md border border-slate-600 px-2 py-1 text-[11px] hover:bg-slate-700/80"
+                    onClick={() => move(key, nextKey, c.id)}
+                  >
+                    Вперёд
+                  </button>
+                )}
                 <button
                   type="button"
-                  className="rounded-md border border-slate-600 px-2 py-1 text-[11px] hover:bg-slate-700/80"
-                  onClick={() => move(key, nextKey, c.id)}
+                  className="rounded-md border border-red-700/60 px-2 py-1 text-[11px] text-red-300 hover:bg-red-950/50"
+                  onClick={() => remove(key, c.id)}
                 >
-                  Вперёд
+                  Удалить
                 </button>
-              )}
-              <button
-                type="button"
-                className="rounded-md border border-red-700/60 px-2 py-1 text-[11px] text-red-300 hover:bg-red-950/50"
-                onClick={() => remove(key, c.id)}
-              >
-                Удалить
-              </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -1450,6 +1843,7 @@ const MessengerShell: React.FC = () => {
   const [showDeleteChatConfirm, setShowDeleteChatConfirm] = useState(false);
   const [deletingChat, setDeletingChat] = useState(false);
   const [deleteChatError, setDeleteChatError] = useState<string | null>(null);
+  const [soleAdminLeaveOpen, setSoleAdminLeaveOpen] = useState(false);
   const [kanbanBoard, setKanbanBoard] = useState<KanbanBoardState | null>(null);
 
   const currentChat = useMemo(
@@ -1591,12 +1985,13 @@ const MessengerShell: React.FC = () => {
           full_name?: string;
           display_name?: string;
           reply_to_data?: Message["reply_to_data"];
+          attachments?: MessageAttachment[];
           data?: KanbanBoardState;
         };
         if (data.type === "kanban_board_updated" && data.data) {
           setKanbanBoard(data.data);
         }
-        if (data.type === "new_message" && data.text && data.message_id) {
+        if (data.type === "new_message" && data.message_id) {
           const incoming: Message = {
             id: data.message_id ?? 0,
             chat: currentChatId,
@@ -1607,7 +2002,8 @@ const MessengerShell: React.FC = () => {
               full_name: data.full_name ?? "Пользователь",
               display_name: data.display_name ?? (data.full_name ?? "User")
             },
-            reply_to_data: data.reply_to_data ?? null
+            reply_to_data: data.reply_to_data ?? null,
+            attachments: data.attachments ?? []
           };
           setMessages((prev) =>
             [...prev.filter((m) => m.id !== incoming.id), incoming].sort(
@@ -1787,16 +2183,30 @@ const MessengerShell: React.FC = () => {
     return () => controller.abort();
   }, [accessToken, userSearch]);
 
-  const handleSendMessage = async (text: string) => {
+  const handleSendMessage = async (text: string, files?: File[]) => {
     if (!accessToken || !currentChatId) return;
+    const fileList = files?.length ? files : [];
     try {
-      await axios.post<Message>(
-        "/api/chats/messages/",
-        { chat: currentChatId, text, reply_to: replyTo ? replyTo.id : null },
-        {
-          headers: { Authorization: `Bearer ${accessToken}` }
+      if (fileList.length > 0) {
+        const fd = new FormData();
+        fd.append("chat", String(currentChatId));
+        fd.append("text", text);
+        for (const f of fileList) {
+          fd.append("file", f);
         }
-      );
+        if (replyTo) fd.append("reply_to", String(replyTo.id));
+        await axios.post<Message>("/api/chats/messages/", fd, {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+      } else {
+        await axios.post<Message>(
+          "/api/chats/messages/",
+          { chat: currentChatId, text, reply_to: replyTo ? replyTo.id : null },
+          {
+            headers: { Authorization: `Bearer ${accessToken}` }
+          }
+        );
+      }
       setReplyTo(null);
     } catch (e) {
       console.error(e);
@@ -1914,18 +2324,21 @@ const MessengerShell: React.FC = () => {
     }
   };
 
-  const handleLeaveCurrentChat = async () => {
-    if (!accessToken || !currentChat) return;
+  const handleLeaveChatAttempt = () => {
     if (
-      currentChat.chat_type === "group" &&
+      currentChat?.chat_type === "group" &&
       currentParticipant?.is_admin &&
       adminsCount <= 1
     ) {
-      alert(
-        "Вы являетесь администратором. Чтобы выйти, назначьте другого участника администратором или удалите группу."
-      );
+      setShowMobileManage(false);
+      setSoleAdminLeaveOpen(true);
       return;
     }
+    void handleLeaveCurrentChat();
+  };
+
+  const handleLeaveCurrentChat = async () => {
+    if (!accessToken || !currentChat) return;
     try {
       await axios.post(
         `/api/chats/chats/${currentChat.id}/leave_chat/`,
@@ -1940,6 +2353,7 @@ const MessengerShell: React.FC = () => {
       setShowKanban(false);
       setShowEditProject(false);
       setKanbanBoard(null);
+      setShowMobileManage(false);
       await fetchChats();
     } catch (e) {
       alert(extractApiErrorMessage(e, "Не удалось выйти из чата."));
@@ -2091,8 +2505,8 @@ const MessengerShell: React.FC = () => {
           chat={currentChat}
           messages={messages}
           replyTo={replyTo}
-          onSend={(text) => {
-            void handleSendMessage(text);
+          onSend={(text, files) => {
+            void handleSendMessage(text, files);
           }}
           onReplySelect={setReplyTo}
           onClearReply={() => setReplyTo(null)}
@@ -2116,7 +2530,7 @@ const MessengerShell: React.FC = () => {
           canManageRoles={canManageRoles}
           canLeaveChat={canLeaveChat}
           onDeleteChat={() => setShowDeleteChatConfirm(true)}
-          onLeaveChat={() => void handleLeaveCurrentChat()}
+          onLeaveChat={handleLeaveChatAttempt}
           onRenameChat={() => setShowRenameChat(true)}
           onEditProjectDetails={() => setShowEditProject(true)}
           onManageRoles={() => setShowRoleManager(true)}
@@ -2217,8 +2631,7 @@ const MessengerShell: React.FC = () => {
               setShowMobileManage(false);
             }}
             onLeaveChat={() => {
-              void handleLeaveCurrentChat();
-              setShowMobileManage(false);
+              handleLeaveChatAttempt();
             }}
             onRenameChat={() => {
               setShowRenameChat(true);
@@ -2292,6 +2705,8 @@ const MessengerShell: React.FC = () => {
         <KanbanModal
           chat={currentChat}
           board={kanbanBoard}
+          isKanbanAdmin={canManageParticipants}
+          participants={currentChat.participants}
           onClose={() => setShowKanban(false)}
           onChange={async (next) => {
             if (!accessToken) return;
@@ -2304,6 +2719,15 @@ const MessengerShell: React.FC = () => {
               );
             } catch (e) {
               console.error(e);
+              try {
+                const resp = await axios.get<{ data: KanbanBoardState }>(
+                  `/api/chats/chats/${currentChat.id}/kanban/`,
+                  { headers: { Authorization: `Bearer ${accessToken}` } }
+                );
+                setKanbanBoard(resp.data.data);
+              } catch {
+                /* ignore */
+              }
             }
           }}
         />
@@ -2359,6 +2783,40 @@ const MessengerShell: React.FC = () => {
                 {deletingChat ? "Удаляем..." : "Удалить чат"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {soleAdminLeaveOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 px-4"
+          onClick={() => setSoleAdminLeaveOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="glass-panel w-full max-w-md p-6 space-y-4 rounded-2xl"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sole-admin-leave-title"
+          >
+            <h2
+              id="sole-admin-leave-title"
+              className="text-base font-semibold text-slate-100"
+            >
+              Выход из чата недоступен
+            </h2>
+            <p className="text-sm text-slate-300 leading-relaxed">
+              Вы являетесь единственным администратором. Чтобы выйти, назначьте
+              другого участника администратором в разделе «Управление ролями»
+              или удалите группу.
+            </p>
+            <button
+              type="button"
+              className="w-full rounded-xl bg-primary hover:bg-primaryDark text-white text-sm font-medium py-2.5 transition"
+              onClick={() => setSoleAdminLeaveOpen(false)}
+            >
+              Понятно
+            </button>
           </div>
         </div>
       )}
