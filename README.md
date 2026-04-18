@@ -1,5 +1,26 @@
 # Teamon – Web Messenger for Full-Fledged Teamwork
 
+## Docker (одна команда — бэкенд + фронтенд)
+
+Требуется [Docker](https://docs.docker.com/get-docker/) и Docker Compose v2.
+
+Из **корня репозитория**:
+
+```bash
+docker compose up --build
+```
+
+- API: `http://localhost:8000`
+- Фронтенд (Vite): `http://localhost:5173`
+
+Миграции выполняются при старте контейнера `backend`. База SQLite хранится в именованном томе `teamon_data` (файл `/data/db.sqlite3` внутри контейнера), загруженные файлы — в `teamon_media`.
+
+Остановка: `Ctrl+C` или `docker compose down`. Чтобы удалить и тома с данными: `docker compose down -v`.
+
+Локальный запуск без Docker (venv / npm) не меняется: переменная `DJANGO_DB_PATH` задаётся только в Docker; вручную база по-прежнему `backend/src/db.sqlite3`.
+
+---
+
 ## Бэкенд
 Предварительно необходимо перейти в папку `backend`
 ### Запуск:

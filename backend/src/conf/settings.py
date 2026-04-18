@@ -10,10 +10,14 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Путь к SQLite (в Docker можно задать DJANGO_DB_PATH=/data/db.sqlite3 + volume на /data)
+_SQLITE_PATH = os.environ.get("DJANGO_DB_PATH", str(BASE_DIR / "db.sqlite3"))
 
 
 # Quick-start development settings - unsuitable for production
@@ -87,7 +91,7 @@ CHANNEL_LAYERS = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': _SQLITE_PATH,
     }
 }
 
