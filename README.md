@@ -1,603 +1,198 @@
-# Teamon – Web Messenger for Full-Fledged Teamwork
+# Teamon
 
-## Docker (одна команда — бэкенд + фронтенд)
+**Web Messenger for Full-Fledged Teamwork**
 
-Требуется [Docker](https://docs.docker.com/get-docker/) и Docker Compose v2.
+[![Python](https://img.shields.io/badge/Python-3775A8?logo=python&logoColor=white)](https://python.org)
+[![Django](https://img.shields.io/badge/Django-092E20?logo=django&logoColor=white)](https://djangoproject.com)
+[![DRF](https://img.shields.io/badge/DRF-000000?logo=django&logoColor=white)](https://www.django-rest-framework.org)
+[![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)](https://vitejs.dev)
+[![WebSocket](https://img.shields.io/badge/WebSocket-010101?logo=socket.io&logoColor=white)](https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://docker.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Из **корня репозитория**:
+## About the Project
+
+**Teamon** is a modern web messenger designed for full-fledged teamwork. It combines the familiarity of instant messaging with powerful project management features, allowing teams to communicate effectively, organize group chats around projects, and manage participants in real-time.
+
+The project features a clean API-first architecture with JWT authentication and real-time WebSocket connections, making it a flexible solution for teams looking for a transparent and customizable communication tool.
+
+### Key Features
+
+- **Private & Group Chats** – one-on-one conversations or team-based group discussions.
+- **Project-Based Chats** – group chats can be linked to projects with descriptions.
+- **Real-Time Messaging** – instant message delivery via WebSocket (Socket.IO).
+- **Reply to Messages** – ability to reply to specific messages within a chat.
+- **Soft Delete** – messages can be deleted without permanent removal.
+- **Participant Management** – add or remove users in group chats (admin-only).
+- **JWT Authentication** – secure token-based authentication for all API endpoints.
+- **Docker Support** – one-command setup for both backend and frontend.
+- **SQLite Database** – lightweight and portable; data is persisted via Docker volumes.
+
+---
+
+## Tech Stack
+
+- **Backend**: Python 3.11+, Django 5.2, Django REST Framework
+- **Database**: SQLite (development) / configurable for production
+- **Authentication**: JWT (djangorestframework-simplejwt)
+- **Real-Time**: Django Channels (WebSocket)
+- **Frontend**: Vite + (React/Vue/your choice)
+- **Deployment**: Docker + docker-compose
+- **File Storage**: Local media storage via Docker volume
+
+---
+
+## Build & Run
+
+Clone the repository:
+
+```bash
+git clone https://github.com/yourusername/teamon.git
+cd teamon
+```
+
+### 1. Using Docker (Recommended – one command for backend + frontend)
+
+Requirements: [Docker](https://docs.docker.com/get-docker/) and Docker Compose v2.
+
+From the **repository root**:
 
 ```bash
 docker compose up --build
 ```
 
+After startup:
+
 - API: `http://localhost:8000`
-- Фронтенд (Vite): `http://localhost:5173`
+- Frontend (Vite): `http://localhost:5173`
 
-Миграции выполняются при старте контейнера `backend`. База SQLite хранится в именованном томе `teamon_data` (файл `/data/db.sqlite3` внутри контейнера), загруженные файлы — в `teamon_media`.
+> Migrations run automatically when the `backend` container starts.  
+> SQLite database is stored in a named volume `teamon_data` (`/data/db.sqlite3` inside the container).  
+> Uploaded files are stored in the `teamon_media` volume.
 
-Остановка: `Ctrl+C` или `docker compose down`. Чтобы удалить и тома с данными: `docker compose down -v`.
+**Stop:** `Ctrl+C` or `docker compose down`  
+**Stop + delete data volumes:** `docker compose down -v`
 
-Локальный запуск без Docker (venv / npm) не меняется: переменная `DJANGO_DB_PATH` задаётся только в Docker; вручную база по-прежнему `backend/src/db.sqlite3`.
+### 2. Local Development (Without Docker)
 
----
+#### Backend
 
-## Бэкенд
-Предварительно необходимо перейти в папку `backend`
-### Запуск:
-Создайте виртуальное окружение (и зайдите в него)
-```
-python -m venv venv
-```
-Установите зависимости
-```
-pip install -r requirements.txt
-```
-Сделайте миграции (перейдя в папку `src`)
-```
-python manage.py migrate
-```
-Запустите бэкенд
-```
-python manage.py runserver
-```
-### Эндпоинты
-Регистрация  
-URL: `/api/auth/register/`  
-Тело запроса:  
-<img width="85" height="128" alt="изображение" src="https://github.com/user-attachments/assets/c344a415-f852-45b7-866a-3fd19273ac87" />  
-Ответ:  
-<img width="766" height="322" alt="изображение" src="https://github.com/user-attachments/assets/20bbcb23-bdc7-400a-b7f9-cc2774e5560b" />  
+Navigate to the `backend` folder:
 
-Логин  
-URL: `/api/auth/login/`  
-Тело запроса:  
-<img width="177" height="51" alt="изображение" src="https://github.com/user-attachments/assets/e8a83ea9-61a7-4772-a997-5fc72c139550" />  
-Ответ:  
-<img width="758" height="324" alt="изображение" src="https://github.com/user-attachments/assets/6c0936aa-b36b-44ea-8593-915f938686bb" />  
-
-Информация о пользователе  
-URL: `/api/auth/profile`  
-Важно использовать access_token пользователя. Auth Type: Bearer Token
-Ответ:  
-<img width="467" height="144" alt="изображение" src="https://github.com/user-attachments/assets/1ea40f7b-fcad-4fbf-86d8-d58e320a2cea" />  
-
-# Полная документация API чатов
-
-## Базовый URL
-```
-http://localhost:8000/api/chats/
-```
-WebSocket: `ws://localhost:8000/ws/`
-
-## Аутентификация
-Для всех запросов (кроме WebSocket подключения) требуется JWT токен в заголовке:
-```
-Authorization: Bearer <ваш_токен>
-```
-
-Для WebSocket токен передается в query параметре:
-```
-ws://localhost:8000/ws/chat/1/?token=<ваш_токен>
-```
-
----
-
-# REST API Эндпоинты
-
-## 1. Чаты (Chats)
-
-### 1.1. Получить все чаты пользователя
-**GET** `/api/chats/chats/`
-
-**Response 200 OK**
-```json
-[
-    {
-        "id": 1,
-        "chat_type": "private",
-        "name": null,
-        "project": null,
-        "project_details": null,
-        "created_at": "2024-01-20T10:00:00Z",
-        "updated_at": "2024-01-20T10:30:00Z",
-        "participants": [
-            {
-                "id": 1,
-                "user": {
-                    "id": 1,
-                    "email": "user1@example.com",
-                    "first_name": "Иван",
-                    "last_name": "Иванов",
-                    "full_name": "Иван Иванов",
-                    "display_name": "Иван Иванов"
-                },
-                "joined_at": "2024-01-20T10:00:00Z",
-                "is_admin": true
-            },
-            {
-                "id": 2,
-                "user": {
-                    "id": 2,
-                    "email": "user2@example.com",
-                    "first_name": "Петр",
-                    "last_name": "Петров",
-                    "full_name": "Петр Петров",
-                    "display_name": "Петр Петров"
-                },
-                "joined_at": "2024-01-20T10:00:00Z",
-                "is_admin": false
-            }
-        ],
-        "last_message": {
-            "id": 10,
-            "text": "Привет!",
-            "sender": {
-                "id": 2,
-                "email": "user2@example.com",
-                "full_name": "Петр Петров"
-            },
-            "created_at": "2024-01-20T10:30:00Z"
-        },
-        "participant_count": 2
-    },
-    {
-        "id": 2,
-        "chat_type": "group",
-        "name": "Проект Alpha",
-        "project": 1,
-        "project_details": {
-            "id": 1,
-            "name": "Проект Alpha",
-            "description": "Описание проекта",
-            "created_at": "2024-01-20T09:00:00Z",
-            "updated_at": "2024-01-20T09:00:00Z"
-        },
-        "created_at": "2024-01-20T09:00:00Z",
-        "updated_at": "2024-01-20T11:00:00Z",
-        "participants": [...],
-        "last_message": {...},
-        "participant_count": 5
-    }
-]
-```
-
-### 1.2. Получить конкретный чат
-**GET** `/api/chats/chats/{id}/`
-
-**Response 200 OK**
-```json
-{
-    "id": 1,
-    "chat_type": "private",
-    "name": null,
-    "project": null,
-    "project_details": null,
-    "created_at": "2024-01-20T10:00:00Z",
-    "updated_at": "2024-01-20T10:30:00Z",
-    "participants": [...],
-    "last_message": {...},
-    "participant_count": 2
-}
-```
-
-### 1.3. Создать личный чат
-**POST** `/api/chats/chats/`
-
-**Request Body:**
-```json
-{
-    "chat_type": "private",
-    "other_user_id": 2
-}
-```
-
-**Response 201 Created**
-```json
-{
-    "id": 3,
-    "chat_type": "private",
-    "name": null,
-    "project": null,
-    "project_details": null,
-    "created_at": "2024-01-20T12:00:00Z",
-    "updated_at": "2024-01-20T12:00:00Z",
-    "participants": [
-        {
-            "id": 10,
-            "user": {
-                "id": 1,
-                "email": "your@email.com",
-                "first_name": "Иван",
-                "last_name": "Иванов",
-                "full_name": "Иван Иванов",
-                "display_name": "Иван Иванов"
-            },
-            "joined_at": "2024-01-20T12:00:00Z",
-            "is_admin": true
-        },
-        {
-            "id": 11,
-            "user": {
-                "id": 2,
-                "email": "other@example.com",
-                "first_name": "Петр",
-                "last_name": "Петров",
-                "full_name": "Петр Петров",
-                "display_name": "Петр Петров"
-            },
-            "joined_at": "2024-01-20T12:00:00Z",
-            "is_admin": false
-        }
-    ],
-    "last_message": null,
-    "participant_count": 2
-}
-```
-
-### 1.4. Создать групповой чат (без проекта)
-**POST** `/api/chats/chats/`
-
-**Request Body:**
-```json
-{
-    "chat_type": "group",
-    "name": "Чат команды разработки",
-    "participant_ids": [2, 3, 4]
-}
-```
-
-### 1.5. Создать групповой чат с проектом
-**POST** `/api/chats/chats/`
-
-**Request Body:**
-```json
-{
-    "chat_type": "group",
-    "project_name": "Мой новый проект",
-    "project_description": "Описание проекта",
-    "participant_ids": [2, 3, 4]
-}
-```
-
-**Response 201 Created**
-```json
-{
-    "id": 4,
-    "chat_type": "group",
-    "name": "Мой новый проект",
-    "project": 1,
-    "project_details": {
-        "id": 1,
-        "name": "Мой новый проект",
-        "description": "Описание проекта",
-        "created_at": "2024-01-20T12:00:00Z",
-        "updated_at": "2024-01-20T12:00:00Z"
-    },
-    "created_at": "2024-01-20T12:00:00Z",
-    "updated_at": "2024-01-20T12:00:00Z",
-    "participants": [
-        {
-            "id": 12,
-            "user": {
-                "id": 1,
-                "email": "your@email.com",
-                "first_name": "Иван",
-                "last_name": "Иванов",
-                "full_name": "Иван Иванов",
-                "display_name": "Иван Иванов"
-            },
-            "joined_at": "2024-01-20T12:00:00Z",
-            "is_admin": true
-        }
-    ],
-    "last_message": null,
-    "participant_count": 1
-}
-```
-
-### 1.6. Добавить участника в групповой чат
-**POST** `/api/chats/chats/{id}/add_participant/`
-
-**Request Body:**
-```json
-{
-    "user_id": 3
-}
-```
-
-**Response 201 Created**
-```json
-{
-    "id": 15,
-    "user": {
-        "id": 3,
-        "email": "newuser@example.com",
-        "first_name": "Новый",
-        "last_name": "Пользователь",
-        "full_name": "Новый Пользователь",
-        "display_name": "Новый Пользователь"
-    },
-    "joined_at": "2024-01-20T12:05:00Z",
-    "is_admin": false
-}
-```
-
-**Response 403 Forbidden** (если не админ)
-```json
-{
-    "error": "Only admins can add participants"
-}
-```
-
-### 1.7. Удалить участника из группового чата
-**POST** `/api/chats/chats/{id}/remove_participant/`
-
-**Request Body:**
-```json
-{
-    "user_id": 3
-}
-```
-
-**Response 200 OK**
-```json
-{
-    "status": "participant removed"
-}
-```
-
-### 1.8. Получить доступных пользователей для добавления
-**GET** `/api/chats/chats/{id}/available_users/`
-
-**Response 200 OK**
-```json
-[
-    {
-        "id": 3,
-        "email": "user3@example.com",
-        "first_name": "Сергей",
-        "last_name": "Сергеев",
-        "full_name": "Сергей Сергеев",
-        "display_name": "Сергей Сергеев"
-    },
-    {
-        "id": 4,
-        "email": "user4@example.com",
-        "first_name": "Анна",
-        "last_name": "Аннова",
-        "full_name": "Анна Аннова",
-        "display_name": "Анна Аннова"
-    }
-]
-```
-
----
-
-## 2. Сообщения (Messages)
-
-### 2.1. Получить сообщения чата
-**GET** `/api/chats/messages/?chat_id={id}`
-
-Параметры:
-- `chat_id` - ID чата (обязательно)
-- `page` - номер страницы (опционально)
-- `page_size` - количество сообщений на странице (опционально, по умолчанию 50)
-
-**Response 200 OK**
-```json
-[
-    {
-        "id": 101,
-        "chat": 1,
-        "sender": {
-            "id": 2,
-            "email": "user2@example.com",
-            "first_name": "Петр",
-            "last_name": "Петров",
-            "full_name": "Петр Петров",
-            "display_name": "Петр Петров"
-        },
-        "text": "Привет! Как дела?",
-        "created_at": "2024-01-20T10:30:00Z",
-        "updated_at": "2024-01-20T10:30:00Z",
-        "is_deleted": false,
-        "reply_to": null,
-        "reply_to_data": null,
-        "attachments": []
-    },
-    {
-        "id": 100,
-        "chat": 1,
-        "sender": {
-            "id": 1,
-            "email": "user1@example.com",
-            "first_name": "Иван",
-            "last_name": "Иванов",
-            "full_name": "Иван Иванов",
-            "display_name": "Иван Иванов"
-        },
-        "text": "Всем привет!",
-        "created_at": "2024-01-20T10:29:00Z",
-        "updated_at": "2024-01-20T10:29:00Z",
-        "is_deleted": false,
-        "reply_to": null,
-        "reply_to_data": null,
-        "attachments": []
-    }
-]
-```
-
-### 2.2. Отправить сообщение
-**POST** `/api/chats/messages/`
-
-**Request Body:**
-```json
-{
-    "chat": 1,
-    "text": "Новое сообщение",
-    "reply_to": null  // опционально, ID сообщения на которое отвечаем
-}
-```
-
-**Response 201 Created**
-```json
-{
-    "id": 102,
-    "chat": 1,
-    "sender": {
-        "id": 1,
-        "email": "user1@example.com",
-        "first_name": "Иван",
-        "last_name": "Иванов",
-        "full_name": "Иван Иванов",
-        "display_name": "Иван Иванов"
-    },
-    "text": "Новое сообщение",
-    "created_at": "2024-01-20T12:10:00Z",
-    "updated_at": "2024-01-20T12:10:00Z",
-    "is_deleted": false,
-    "reply_to": null,
-    "reply_to_data": null,
-    "attachments": []
-}
-```
-
-### 2.3. Удалить сообщение (soft delete)
-**POST** `/api/chats/messages/{id}/mark_as_deleted/`
-
-**Response 200 OK**
-```json
-{
-    "status": "deleted"
-}
-```
-
-### 2.4. Ответить на сообщение
-**POST** `/api/chats/messages/`
-
-**Request Body:**
-```json
-{
-    "chat": 1,
-    "text": "Это ответ на предыдущее сообщение",
-    "reply_to": 100
-}
-```
-
-**Response 201 Created** (содержит информацию об оригинальном сообщении)
-```json
-{
-    "id": 103,
-    "chat": 1,
-    "sender": {...},
-    "text": "Это ответ на предыдущее сообщение",
-    "created_at": "2024-01-20T12:15:00Z",
-    "reply_to": 100,
-    "reply_to_data": {
-        "id": 100,
-        "text": "Всем привет!",
-        "sender": {
-            "id": 1,
-            "email": "user1@example.com",
-            "first_name": "Иван",
-            "last_name": "Иванов",
-            "full_name": "Иван Иванов"
-        }
-    },
-    "attachments": []
-}
-```
-
----
-
-# WebSocket эндпоинты
-
-## 3. WebSocket соединения
-
-### 3.1. Подключение к чату
-**WebSocket URL:** `ws://localhost:8000/ws/chat/{chat_id}/?token={jwt_token}`
-
-**Пример подключения:**
-```
-ws://localhost:8000/ws/chat/1/?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-```
-
-### 3.2. Типы сообщений от клиента к серверу
-
-#### Отправка сообщения
-```json
-{
-    "type": "message",
-    "text": "Текст сообщения"
-}
-```
-
-### 3.3. Типы сообщений от сервера к клиенту
-
-#### Новое сообщение
-```json
-{
-    "type": "new_message",
-    "message_id": 102,
-    "text": "Текст сообщения",
-    "user_id": 1,
-    "email": "user1@example.com",
-    "full_name": "Иван Иванов",
-    "display_name": "Иван Иванов",
-    "created_at": "2024-01-20T12:10:00Z"
-}
-```
-
-#### Пользователь подключился
-```json
-{
-    "type": "user_connected",
-    "user_id": 2,
-    "email": "user2@example.com",
-    "full_name": "Петр Петров",
-    "display_name": "Петр Петров"
-}
-```
-
-#### Пользователь отключился
-```json
-{
-    "type": "user_disconnected",
-    "user_id": 2,
-    "email": "user2@example.com",
-    "full_name": "Петр Петров",
-    "display_name": "Петр Петров",
-    "close_code": 1000
-}
-```
-
-#### Новый участник в чате
-```json
-{
-    "type": "new_participant",
-    "user_id": 3,
-    "email": "newuser@example.com",
-    "full_name": "Новый Пользователь",
-    "display_name": "Новый Пользователь",
-    "joined_at": "2024-01-20T12:05:00Z"
-}
-```
-
-#### Краткая инструкция для запуска проекта
-В первой командной строке (для бэкэнда):
-```
+```bash
 cd backend
 python -m venv venv
-venv\Scripts\activate
+source venv/bin/activate    # Windows: venv\Scripts\activate
+
 pip install -r requirements.txt
 cd src
 python manage.py migrate
 python manage.py runserver
 ```
 
-Во второй командной строке (для фронтенда):
-```
+#### Frontend
+
+In a separate terminal:
+
+```bash
 cd frontend
 npm install
 npm run dev
+```
+
+> **Note:** When running manually, the database is created at `backend/src/db.sqlite3`.
+
+---
+
+## API Endpoints
+
+Base URL: `http://localhost:8000/api/`
+
+### Authentication
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/auth/register/` | User registration |
+| POST | `/auth/login/` | Login (returns JWT tokens) |
+| GET | `/auth/profile/` | Get current user info (requires Bearer token) |
+
+**Example Login Request:**
+```json
+{
+    "email": "user@example.com",
+    "password": "yourpassword"
+}
+```
+
+### Chats
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/chats/chats/` | Get all user chats |
+| GET | `/chats/chats/{id}/` | Get specific chat |
+| POST | `/chats/chats/` | Create private/group chat |
+| POST | `/chats/chats/{id}/add_participant/` | Add participant (group admin only) |
+| POST | `/chats/chats/{id}/remove_participant/` | Remove participant (group admin only) |
+| GET | `/chats/chats/{id}/available_users/` | Get users available to add |
+
+### Messages
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/chats/messages/?chat_id={id}` | Get messages in a chat (paginated) |
+| POST | `/chats/messages/` | Send a new message |
+| POST | `/chats/messages/{id}/mark_as_deleted/` | Soft-delete a message |
+
+---
+
+## WebSocket Real-Time Events
+
+**Connection URL:** `ws://localhost:8000/ws/chat/{chat_id}/?token={jwt_token}`
+
+### Client → Server
+
+```json
+{
+    "type": "message",
+    "text": "Your message text"
+}
+```
+
+### Server → Client
+
+| Type | Description |
+|------|-------------|
+| `new_message` | A new message was sent |
+| `user_connected` | A user joined the chat |
+| `user_disconnected` | A user left the chat |
+| `new_participant` | A new participant was added (group chat) |
+
+---
+
+## Project Structure
+
+```bash
+teamon/
+├── README.md
+├── docker-compose.yaml
+├── backend/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── src/
+│       ├── manage.py
+│       ├── db.sqlite3          # (when running manually)
+│       └── ...                 # Django project files
+└── frontend/
+    ├── package.json
+    ├── vite.config.js
+    └── src/                    # Frontend source code
+```
+
+---
+
+## License
+
+This project is licensed under the MIT License – you are free to use, modify, and distribute it.
+
+Contributions are welcome! Feel free to open issues and pull requests.
 ```
