@@ -5,7 +5,8 @@
 [![Python](https://img.shields.io/badge/Python-3775A8?logo=python&logoColor=white)](https://python.org)
 [![Django](https://img.shields.io/badge/Django-092E20?logo=django&logoColor=white)](https://djangoproject.com)
 [![DRF](https://img.shields.io/badge/DRF-000000?logo=django&logoColor=white)](https://www.django-rest-framework.org)
-[![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)](https://vitejs.dev)
+[![React](https://img.shields.io/badge/React-61DAFB?logo=react&logoColor=black)](https://react.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![WebSocket](https://img.shields.io/badge/WebSocket-010101?logo=socket.io&logoColor=white)](https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://docker.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -58,7 +59,7 @@ Requirements: [Docker](https://docs.docker.com/get-docker/) and Docker Compose v
 From the **repository root**:
 
 ```bash
-docker compose up --build
+docker-compose up --build
 ```
 
 After startup:
@@ -70,8 +71,8 @@ After startup:
 > SQLite database is stored in a named volume `teamon_data` (`/data/db.sqlite3` inside the container).  
 > Uploaded files are stored in the `teamon_media` volume.
 
-**Stop:** `Ctrl+C` or `docker compose down`  
-**Stop + delete data volumes:** `docker compose down -v`
+**Stop:** `Ctrl+C` or `docker-compose down`  
+**Stop + delete data volumes:** `docker-compose down -v`
 
 ### 2. Local Development (Without Docker)
 
@@ -195,4 +196,3 @@ teamon/
 This project is licensed under the MIT License – you are free to use, modify, and distribute it.
 
 Contributions are welcome! Feel free to open issues and pull requests.
-```
